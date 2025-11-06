@@ -35,7 +35,6 @@ type Config struct {
 	} `toml:"ws"`
 
     AI struct {
-        Engine      string `toml:"engine"`
         Aggregation string `toml:"aggregation"`
         LogEachModel bool   `toml:"log_each_model"`
         Weights   map[string]float64 `toml:"weights"`

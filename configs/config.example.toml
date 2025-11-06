@@ -21,7 +21,6 @@ max_cached = 100
 periods = ["15m", "4h"]
 
 [ai]
-engine = "legacy"
 aggregation = "first-wins" # 可选："meta"（多模型加权多数决）
 log_each_model = false
 decision_interval_seconds = 60

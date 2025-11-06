@@ -61,6 +61,15 @@ func pri(action string) int {
     }
 }
 
+// canonAction 将动作归一化：把 "wait" 视为 "hold"（二者同义，避免在 meta 聚合中制造分歧）
+func canonAction(a string) string {
+    a = strings.ToLower(strings.TrimSpace(a))
+    if a == "wait" {
+        return "hold"
+    }
+    return a
+}
+
 func (a MetaAggregator) Aggregate(ctx context.Context, outputs []ModelOutput) (ModelOutput, error) {
     // symbol -> action -> weight
     votes := map[string]map[string]float64{}
@@ -74,10 +83,11 @@ func (a MetaAggregator) Aggregate(ctx context.Context, outputs []ModelOutput) (M
             continue
         }
         // 每个 provider 每个 symbol 只取一个主动作
-        chosen := map[string]Decision{} // symbol -> decision
+        chosen := map[string]Decision{} // symbol -> decision（已归一化动作）
         for _, d := range o.Parsed.Decisions {
             s := strings.TrimSpace(d.Symbol)
             if s == "" { continue }
+            d.Action = canonAction(d.Action)
             if prev, ok := chosen[s]; !ok || pri(d.Action) < pri(prev.Action) {
                 chosen[s] = d
             }
