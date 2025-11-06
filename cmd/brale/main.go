@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	"brale/internal/ai"
@@ -92,9 +93,9 @@ func main() {
 	}*/
 	// 从配置构造模型提供方（不使用环境变量）
 	var modelCfgs []ai.ModelCfg
-    for _, m := range cfg.AI.Models {
-        modelCfgs = append(modelCfgs, ai.ModelCfg{ID: m.ID, Provider: m.Provider, Enabled: m.Enabled, APIURL: m.APIURL, APIKey: m.APIKey, Model: m.Model, Headers: m.Headers})
-    }
+	for _, m := range cfg.AI.Models {
+		modelCfgs = append(modelCfgs, ai.ModelCfg{ID: m.ID, Provider: m.Provider, Enabled: m.Enabled, APIURL: m.APIURL, APIKey: m.APIKey, Model: m.Model, Headers: m.Headers})
+	}
 	providers := ai.BuildProvidersFromConfig(modelCfgs)
 	// 启用模型列表日志，便于确认已加载的决策模型
 	{
@@ -138,24 +139,28 @@ func main() {
 		tg = notify.NewTelegram(os.Getenv("TELEGRAM_BOT_TOKEN"), os.Getenv("TELEGRAM_CHAT_ID"))
 	}
 
-    // 决策周期：可配置（单位：秒）
-    decisionInterval := time.Duration(cfg.AI.DecisionIntervalSeconds) * time.Second
-    if decisionInterval <= 0 { decisionInterval = time.Minute }
-    decisionTicker := time.NewTicker(decisionInterval)
-    cacheTicker := time.NewTicker(15 * time.Second) // 打印缓存心跳
-    statsTicker := time.NewTicker(60 * time.Second) // WS 统计
+	// 决策周期：可配置（单位：秒）
+	decisionInterval := time.Duration(cfg.AI.DecisionIntervalSeconds) * time.Second
+	if decisionInterval <= 0 {
+		decisionInterval = time.Minute
+	}
+	decisionTicker := time.NewTicker(decisionInterval)
+	cacheTicker := time.NewTicker(15 * time.Second) // 打印缓存心跳
+	statsTicker := time.NewTicker(60 * time.Second) // WS 统计
 	defer decisionTicker.Stop()
 	defer cacheTicker.Stop()
 	defer statsTicker.Stop()
 
-    // 友好展示：按分钟或秒打印
-    human := fmt.Sprintf("%d 秒", int(decisionInterval.Seconds()))
-    if cfg.AI.DecisionIntervalSeconds%60 == 0 { human = fmt.Sprintf("%d 分钟", cfg.AI.DecisionIntervalSeconds/60) }
-    fmt.Println(fmt.Sprintf("Brale 启动完成。开始订阅 K 线并写入缓存；每 %s 进行一次 AI 决策。按 Ctrl+C 退出。", human))
+	// 友好展示：按分钟或秒打印
+	human := fmt.Sprintf("%d 秒", int(decisionInterval.Seconds()))
+	if cfg.AI.DecisionIntervalSeconds%60 == 0 {
+		human = fmt.Sprintf("%d 分钟", cfg.AI.DecisionIntervalSeconds/60)
+	}
+	fmt.Println(fmt.Sprintf("Brale 启动完成。开始订阅 K 线并写入缓存；每 %s 进行一次 AI 决策。按 Ctrl+C 退出。", human))
 	// 简单开仓冷却（避免频繁开仓）：符号+方向 -> 上次开仓时间
 	lastOpen := map[string]time.Time{}
 
-    for {
+	for {
 		select {
 		case <-ctx.Done():
 			return
@@ -163,40 +168,67 @@ func main() {
 			// 打印缓存状态
 			for _, sym := range syms {
 				for _, iv := range cfg.WS.Periods {
-                        if kl, err := ks.Get(ctx, sym, iv); err == nil {
-                            cnt := len(kl)
-                            tail := ""
-                            if cnt > 0 {
-                                t := time.UnixMilli(kl[cnt-1].CloseTime)
-                                tail = fmt.Sprintf(" 收=%.4f 结束=%d(%s)", kl[cnt-1].Close, kl[cnt-1].CloseTime, t.UTC().Format(time.RFC3339))
-                            }
-                            logger.Debugf("缓存: %s %s 条数=%d%s", sym, iv, cnt, tail)
-                        }
+					if kl, err := ks.Get(ctx, sym, iv); err == nil {
+						cnt := len(kl)
+						tail := ""
+						if cnt > 0 {
+							t := time.UnixMilli(kl[cnt-1].CloseTime)
+							tail = fmt.Sprintf(" 收=%.4f 结束=%d(%s)", kl[cnt-1].Close, kl[cnt-1].CloseTime, t.UTC().Format(time.RFC3339))
+						}
+						logger.Debugf("缓存: %s %s 条数=%d%s", sym, iv, cnt, tail)
+					}
 				}
 			}
-        case <-statsTicker.C:
-            if updater != nil && updater.Client != nil {
-                r, s, last := updater.Client.Stats()
-                logger.Infof("WS统计: 重连=%d 订阅错误=%d 最后错误=%s", r, s, last)
-            }
+		case <-statsTicker.C:
+			if updater != nil && updater.Client != nil {
+				r, s, last := updater.Client.Stats()
+				if last != "" {
+					logger.Errorf("WS统计: 最后错误=%s", last)
+				}
+				logger.Debugf("ws 统计:重连 = %v,订阅错误=%v", r, s)
+			}
 		case <-decisionTicker.C:
 			// 构建最小上下文并进行决策
 			input := ai.Context{Candidates: syms}
-            res, err := engine.Decide(ctx, input)
-            if err != nil {
-                logger.Warnf("AI 决策失败: %v", err)
-                continue
-            }
-            if len(res.Decisions) == 0 {
-                logger.Infof("AI 决策为空（观望）")
-                continue
-            }
-            // 调试：输出原始 JSON 决策片段（需将 log_level 设为 debug 才可见）
-            if res.RawOutput != "" {
-                snippet := res.RawOutput
-                if len(snippet) > 1000 { snippet = snippet[:1000] + "..." }
-                logger.Debugf("AI 原始JSON: %s", snippet)
-            }
+			res, err := engine.Decide(ctx, input)
+			if err != nil {
+				logger.Warnf("AI 决策失败: %v", err)
+				continue
+			}
+			if len(res.Decisions) == 0 {
+				logger.Infof("AI 决策为空（观望）")
+				continue
+			}
+			// 打印思维链与结果JSON（Info）
+			if res.RawOutput != "" {
+				// 提取数组起点
+				arr, start, ok := extractJSONArrayCompatLocal(res.RawOutput)
+				if ok {
+					cot := strings.TrimSpace(res.RawOutput[:start])
+					if cot != "" {
+						if len(cot) > 2000 {
+							cot = cot[:2000] + "..."
+						}
+						logger.Infof("AI 思维链: %s", cot)
+					}
+					// 结果 JSON
+					out := res.RawJSON
+					if out == "" {
+						out = arr
+					}
+					if len(out) > 2000 {
+						out = out[:2000] + "..."
+					}
+					logger.Infof("AI 结果JSON: %s", out)
+				} else {
+					// 未识别到数组，原样打印前缀
+					cot := res.RawOutput
+					if len(cot) > 2000 {
+						cot = cot[:2000] + "..."
+					}
+					logger.Infof("AI 原始输出: %s", cot)
+				}
+			}
 			// 排序与去重（close > open > hold/wait）
 			res.Decisions = ai.OrderAndDedup(res.Decisions)
 			// 打印并通知
@@ -225,44 +257,44 @@ func main() {
 						}
 					}
 				}
-                switch d.Action {
-                case "open_long", "open_short":
-                    if d.Reasoning != "" {
-                        logger.Infof("AI 决策: %s %s lev=%d size=%.0f sl=%.4f tp=%.4f conf=%d 理由=%s",
-                            d.Symbol, d.Action, d.Leverage, d.PositionSizeUSD, d.StopLoss, d.TakeProfit, d.Confidence, d.Reasoning)
-                    } else {
-                        logger.Infof("AI 决策: %s %s lev=%d size=%.0f sl=%.4f tp=%.4f conf=%d",
-                            d.Symbol, d.Action, d.Leverage, d.PositionSizeUSD, d.StopLoss, d.TakeProfit, d.Confidence)
-                    }
-                case "close_long", "close_short":
-                    if d.Reasoning != "" {
-                        if d.Confidence > 0 {
-                            logger.Infof("AI 决策: %s %s conf=%d 理由=%s", d.Symbol, d.Action, d.Confidence, d.Reasoning)
-                        } else {
-                            logger.Infof("AI 决策: %s %s 理由=%s", d.Symbol, d.Action, d.Reasoning)
-                        }
-                    } else {
-                        if d.Confidence > 0 {
-                            logger.Infof("AI 决策: %s %s conf=%d", d.Symbol, d.Action, d.Confidence)
-                        } else {
-                            logger.Infof("AI 决策: %s %s", d.Symbol, d.Action)
-                        }
-                    }
-                default: // hold / wait
-                    if d.Reasoning != "" {
-                        if d.Confidence > 0 {
-                            logger.Infof("AI 决策: %s %s conf=%d 理由=%s", d.Symbol, d.Action, d.Confidence, d.Reasoning)
-                        } else {
-                            logger.Infof("AI 决策: %s %s 理由=%s", d.Symbol, d.Action, d.Reasoning)
-                        }
-                    } else {
-                        if d.Confidence > 0 {
-                            logger.Infof("AI 决策: %s %s conf=%d", d.Symbol, d.Action, d.Confidence)
-                        } else {
-                            logger.Infof("AI 决策: %s %s", d.Symbol, d.Action)
-                        }
-                    }
-                }
+				switch d.Action {
+				case "open_long", "open_short":
+					if d.Reasoning != "" {
+						logger.Infof("AI 决策: %s %s lev=%d size=%.0f sl=%.4f tp=%.4f conf=%d 理由=%s",
+							d.Symbol, d.Action, d.Leverage, d.PositionSizeUSD, d.StopLoss, d.TakeProfit, d.Confidence, d.Reasoning)
+					} else {
+						logger.Infof("AI 决策: %s %s lev=%d size=%.0f sl=%.4f tp=%.4f conf=%d",
+							d.Symbol, d.Action, d.Leverage, d.PositionSizeUSD, d.StopLoss, d.TakeProfit, d.Confidence)
+					}
+				case "close_long", "close_short":
+					if d.Reasoning != "" {
+						if d.Confidence > 0 {
+							logger.Infof("AI 决策: %s %s conf=%d 理由=%s", d.Symbol, d.Action, d.Confidence, d.Reasoning)
+						} else {
+							logger.Infof("AI 决策: %s %s 理由=%s", d.Symbol, d.Action, d.Reasoning)
+						}
+					} else {
+						if d.Confidence > 0 {
+							logger.Infof("AI 决策: %s %s conf=%d", d.Symbol, d.Action, d.Confidence)
+						} else {
+							logger.Infof("AI 决策: %s %s", d.Symbol, d.Action)
+						}
+					}
+				default: // hold / wait
+					if d.Reasoning != "" {
+						if d.Confidence > 0 {
+							logger.Infof("AI 决策: %s %s conf=%d 理由=%s", d.Symbol, d.Action, d.Confidence, d.Reasoning)
+						} else {
+							logger.Infof("AI 决策: %s %s 理由=%s", d.Symbol, d.Action, d.Reasoning)
+						}
+					} else {
+						if d.Confidence > 0 {
+							logger.Infof("AI 决策: %s %s conf=%d", d.Symbol, d.Action, d.Confidence)
+						} else {
+							logger.Infof("AI 决策: %s %s", d.Symbol, d.Action)
+						}
+					}
+				}
 				if d.Action == "open_long" || d.Action == "open_short" {
 					if newOpens >= cfg.Advanced.MaxOpensPerCycle {
 						logger.Infof("跳过超出本周期开仓上限: %s %s", d.Symbol, d.Action)
@@ -289,4 +321,25 @@ func main() {
 			}
 		}
 	}
+}
+
+// extractJSONArrayCompatLocal 提取首个 JSON 数组，并返回起始下标
+func extractJSONArrayCompatLocal(s string) (string, int, bool) {
+	start := strings.Index(s, "[")
+	if start == -1 {
+		return "", -1, false
+	}
+	depth := 0
+	for i := start; i < len(s); i++ {
+		switch s[i] {
+		case '[':
+			depth++
+		case ']':
+			depth--
+			if depth == 0 {
+				return strings.TrimSpace(s[start : i+1]), start, true
+			}
+		}
+	}
+	return "", -1, false
 }

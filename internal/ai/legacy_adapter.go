@@ -74,7 +74,8 @@ func (e *LegacyEngineAdapter) Decide(ctx context.Context, input Context) (Decisi
                 var ds []Decision
                 if je := json.Unmarshal([]byte(arr), &ds); je == nil {
                     parsed.Decisions = ds
-                    parsed.RawOutput = arr
+                    parsed.RawOutput = raw
+                    parsed.RawJSON = arr
                     logger.Infof("模型 %s 解析到 %d 条决策", p.ID(), len(ds))
                 } else {
                     err = je
@@ -167,7 +168,15 @@ func (e *LegacyEngineAdapter) buildUserSummary(ctx context.Context, candidates [
 			ema20 := indicators.EMA(closes, 20)
 			macd := indicators.MACD(closes)
 			rsi14 := indicators.RSI(closes, 14)
-			b.WriteString(fmt.Sprintf(" EMA20=%.3f MACD=%.3f RSI14=%.2f", ema20, macd, rsi14))
+            b.WriteString(fmt.Sprintf(" EMA20=%.3f MACD=%.3f RSI14=%.2f", ema20, macd, rsi14))
+            // 通俗描述
+            trend := "下方"
+            if last.Close >= ema20 { trend = "上方" }
+            momentum := "中性"
+            if macd > 0.0 { momentum = "多头动能" } else if macd < 0.0 { momentum = "空头动能" }
+            rsiSig := "中性"
+            if rsi14 >= 70 { rsiSig = "超买" } else if rsi14 <= 30 { rsiSig = "超卖" }
+            b.WriteString(fmt.Sprintf(" | 趋势: 收盘在EMA20%s | 动能: %s | RSI: %s", trend, momentum, rsiSig))
 			empty = false
 			// 限制每个币的展示长度，避免过长
 			if i >= 2 {
@@ -192,8 +201,8 @@ func (e *LegacyEngineAdapter) buildUserSummary(ctx context.Context, candidates [
 		}
 		b.WriteString("\n")
 	}
-    b.WriteString("\n请直接输出 JSON 数组作为最终结果；数组中每项必须包含 symbol、action，并附带简短的 reasoning 字段（1-3 句话说明依据，不要输出详细推理过程）。\n")
-    b.WriteString("示例: [ {\"symbol\":\"BTCUSDT\",\"action\":\"hold\",\"reasoning\":\"未满足三步确认，暂不入场\"} ]\n")
+    b.WriteString("\n请先输出一段简短的【思维链】（最多3句，说明判断依据与步骤），然后换行仅输出 JSON 数组作为最终结果；数组中每项必须包含 symbol、action，并附带简短的 reasoning 字段。\n")
+    b.WriteString("示例:\n思维链: 4h 供需区不明确，15m 未出现有效形态，MACD 未确认。\n[ {\"symbol\":\"BTCUSDT\",\"action\":\"hold\",\"reasoning\":\"未满足三步确认，暂不入场\"} ]\n")
     return b.String()
 }
 

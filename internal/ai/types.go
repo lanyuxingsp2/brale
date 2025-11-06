@@ -17,6 +17,7 @@ type Decision struct {
 
 // DecisionResult AI 决策输出（可包含多币种）
 type DecisionResult struct {
-	Decisions []Decision
-	RawOutput string // 原始模型输出（便于调试）
+    Decisions []Decision
+    RawOutput string // 原始模型完整输出（便于调试/提取思维链）
+    RawJSON   string // 提取到的 JSON 决策数组文本
 }
