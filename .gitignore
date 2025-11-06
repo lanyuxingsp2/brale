@@ -1,0 +1,15 @@
+# Local build artifacts
+bin/
+
+# IDE/editor
+.idea/
+
+# Local config (keep secrets out of VCS)
+configs/config.toml
+
+# Tests (exclude from GitHub per request)
+*_test.go
+
+# Do not publish this helper file
+AGENTS.md
+

@@ -1,0 +1,55 @@
+# Example config for GitHub (no secrets). Copy to configs/config.toml for local use.
+
+[app]
+env = "dev"
+log_level = "info"
+
+[exchange]
+name = "binance-futures"
+ws_batch_size = 150
+
+[symbols]
+provider = "default"
+default_list = ["BTCUSDT", "ETHUSDT"]
+# api_url = "http://your-service/symbols" # when provider=http
+
+[kline]
+periods = ["5m", "15m"]
+max_cached = 100
+
+[ws]
+periods = ["15m", "4h"]
+
+[ai]
+engine = "legacy"
+aggregation = "first-wins"
+decision_interval_seconds = 60
+models = [
+  # OpenAI compatible entries. Keep enabled=false and api_key empty in public config.
+  { id = "openai",  provider = "openai",  enabled = false, api_url = "https://api.openai.com/v1", api_key = "", model = "gpt-4o-mini" },
+  # Example: vanchin.streamlake (OpenAI-compatible). Fill api_key/model locally and set enabled=true.
+  { id = "vanchin", provider = "openai",  enabled = false, api_url = "https://vanchin.streamlake.ai/api/gateway/v1/endpoints", api_key = "", model = "YOUR_MODEL_ID" }
+]
+
+# If your provider requires a non-standard header (e.g., X-API-Key), you can add:
+# { id = "custom", provider = "openai", enabled = false, api_url = "https://your-base/v1", model = "your-model",
+#   headers = { "X-API-Key" = "<set-locally>" } }
+
+[mcp]
+timeout_seconds = 120
+
+[prompt]
+dir = "prompts"
+system_template = "default"
+
+[notify.telegram]
+enabled = false
+bot_token = ""  # set locally
+chat_id = ""    # set locally
+
+[advanced]
+liquidity_filter_usd_m = 15
+min_risk_reward = 3.0
+open_cooldown_seconds = 180
+max_opens_per_cycle = 3
+
