@@ -208,25 +208,21 @@ func (a *App) Run(ctx context.Context) error {
 				logger.Infof("AI 决策为空（观望）")
 				continue
 			}
-			// 打印思维链与结果JSON（Info）
+			// 打印思维链与结果JSON（表格展示）
 			if res.RawOutput != "" {
 				arr, start, ok := ai.ExtractJSONArrayWithIndex(res.RawOutput)
 				if ok {
 					cot := strings.TrimSpace(res.RawOutput[:start])
 					pretty := ai.PrettyJSON(arr)
-					table := ""
-					if ds, err := ai.ParseDecisions(arr); err == nil {
-						table = ai.FormatDecisionsTable(ds)
-					}
 					cot = ai.TrimTo(cot, 2400)
 					pretty = ai.TrimTo(pretty, 3600)
-					if table != "" {
-						table = ai.TrimTo(table, 2400)
-					}
-					logger.Infof("\n——— AI[final] ———\n• 思维链:\n%s\n• 结果(JSON):\n%s\n• 表格:\n%s———————————", cot, pretty, table)
+					t1 := ai.RenderBlockTable("AI[final] 思维链", cot)
+					t2 := ai.RenderBlockTable("AI[final] 结果(JSON)", pretty)
+					logger.Infof("\n%s\n%s", t1, t2)
 				} else {
-					cot := ai.TrimTo(res.RawOutput, 4000)
-					logger.Infof("\n——— AI[final] ———\n• 原始输出:\n%s\n———————————", cot)
+					t1 := ai.RenderBlockTable("AI[final] 思维链", "失败")
+					t2 := ai.RenderBlockTable("AI[final] 结果(JSON)", "失败")
+					logger.Infof("\n%s\n%s", t1, t2)
 				}
 			}
 			// Meta 聚合发生分歧时，发送一次 Telegram 说明各模型选择与理由

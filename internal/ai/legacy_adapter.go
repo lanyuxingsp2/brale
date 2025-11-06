@@ -126,30 +126,31 @@ func (e *LegacyEngineAdapter) Decide(ctx context.Context, input Context) (Decisi
     if e.LogEachModel {
         for _, o := range outs {
             if o.Err != nil {
-                logger.Warnf("AI[%s] 调用失败: %v", o.ProviderID, o.Err)
+                t1 := RenderBlockTable("AI["+o.ProviderID+"] 思维链", "失败: "+o.Err.Error())
+                t2 := RenderBlockTable("AI["+o.ProviderID+"] 结果(JSON)", "失败")
+                logger.Infof("\n%s\n%s", t1, t2)
                 continue
             }
             if o.Raw == "" {
-                logger.Warnf("AI[%s] 无输出", o.ProviderID)
+                t1 := RenderBlockTable("AI["+o.ProviderID+"] 思维链", "失败: 无输出")
+                t2 := RenderBlockTable("AI["+o.ProviderID+"] 结果(JSON)", "失败")
+                logger.Infof("\n%s\n%s", t1, t2)
                 continue
             }
             arr, start, ok := ExtractJSONArrayWithIndex(o.Raw)
             if ok {
                 cot := strings.TrimSpace(o.Raw[:start])
-                // 美化结果 JSON + 表格视图
                 pretty := PrettyJSON(arr)
-                table := ""
-                if ds, err := ParseDecisions(arr); err == nil {
-                    table = FormatDecisionsTable(ds)
-                }
-                // 适度裁剪，防止日志过长
                 cot = TrimTo(cot, 1200)
                 pretty = TrimTo(pretty, 1800)
-                if table != "" { table = TrimTo(table, 1200) }
-                logger.Infof("\n——— AI[%s] ———\n• 思维链:\n%s\n• 结果(JSON):\n%s\n• 表格:\n%s———————————", o.ProviderID, cot, pretty, table)
+                t1 := RenderBlockTable("AI["+o.ProviderID+"] 思维链", cot)
+                t2 := RenderBlockTable("AI["+o.ProviderID+"] 结果(JSON)", pretty)
+                logger.Infof("\n%s\n%s", t1, t2)
             } else {
-                cot := TrimTo(o.Raw, 2000)
-                logger.Infof("\n——— AI[%s] ———\n• 原始输出:\n%s\n———————————", o.ProviderID, cot)
+                // 解析不到 JSON 也视为失败
+                t1 := RenderBlockTable("AI["+o.ProviderID+"] 思维链", "失败")
+                t2 := RenderBlockTable("AI["+o.ProviderID+"] 结果(JSON)", "失败")
+                logger.Infof("\n%s\n%s", t1, t2)
             }
         }
     }

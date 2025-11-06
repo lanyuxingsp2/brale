@@ -3,7 +3,6 @@ package ai
 import (
     "bytes"
     "encoding/json"
-    "fmt"
     "strings"
 )
 
@@ -30,34 +29,4 @@ func TrimTo(s string, max int) string {
     return buf.String()
 }
 
-// ParseDecisions 将 JSON 数组反序列化为 Decision 列表
-func ParseDecisions(raw string) ([]Decision, error) {
-    var ds []Decision
-    if err := json.Unmarshal([]byte(strings.TrimSpace(raw)), &ds); err != nil {
-        return nil, err
-    }
-    return ds, nil
-}
-
-// FormatDecisionsTable 将决策渲染为简易表格
-func FormatDecisionsTable(ds []Decision) string {
-    if len(ds) == 0 { return "" }
-    // 头
-    var b strings.Builder
-    b.WriteString("symbol        | action       | conf | reasoning\n")
-    b.WriteString("--------------+--------------+------+------------------------------\n")
-    for _, d := range ds {
-        sym := pad(d.Symbol, 12)
-        act := pad(d.Action, 12)
-        conf := fmt.Sprintf("%4d", d.Confidence)
-        reason := strings.ReplaceAll(d.Reasoning, "\n", " ")
-        if len(reason) > 80 { reason = reason[:80] + "..." }
-        b.WriteString(fmt.Sprintf("%s | %s | %s | %s\n", sym, act, conf, reason))
-    }
-    return b.String()
-}
-
-func pad(s string, n int) string {
-    if len(s) >= n { return s[:n] }
-    return s + strings.Repeat(" ", n-len(s))
-}
+// 删除本地表格格式化，改用 go-pretty 渲染
