@@ -20,4 +20,6 @@ type DecisionResult struct {
     Decisions []Decision
     RawOutput string // 原始模型完整输出（便于调试/提取思维链）
     RawJSON   string // 提取到的 JSON 决策数组文本
+    // MetaSummary: 当使用 meta 聚合时，记录各模型投票与理由的汇总文本（用于通知）
+    MetaSummary string
 }

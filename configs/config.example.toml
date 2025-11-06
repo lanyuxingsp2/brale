@@ -22,7 +22,7 @@ periods = ["15m", "4h"]
 
 [ai]
 engine = "legacy"
-aggregation = "first-wins"
+aggregation = "first-wins" # 可选："meta"（多模型加权多数决）
 log_each_model = false
 decision_interval_seconds = 60
 models = [
@@ -31,6 +31,10 @@ models = [
   # Example: vanchin.streamlake (OpenAI-compatible). Fill api_key/model locally and set enabled=true.
   { id = "vanchin", provider = "openai",  enabled = false, api_url = "https://vanchin.streamlake.ai/api/gateway/v1/endpoints", api_key = "", model = "YOUR_MODEL_ID" }
 ]
+
+# 可选：当 aggregation = "meta" 时，按 Provider ID 配置权重（缺省均为 1.0）。
+# 提示：id 来自 models[] 的 id；若未设置，程序会自动生成如 "openai:gpt-4o-mini"。
+weights = {}
 
 # If your provider requires a non-standard header (e.g., X-API-Key), you can add:
 # { id = "custom", provider = "openai", enabled = false, api_url = "https://your-base/v1", model = "your-model",

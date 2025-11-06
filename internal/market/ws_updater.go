@@ -21,9 +21,12 @@ import (
 // 实际的 WS 接入将复用旧版 market.NewWSMonitor 并在收到事件时调用 Update。
 
 type WSUpdater struct {
-	Store  *store.MemoryKlineStore
-	Max    int // 每个周期最多缓存条数
-	Client *CombinedStreamsClient
+    Store  *store.MemoryKlineStore
+    Max    int // 每个周期最多缓存条数
+    Client *CombinedStreamsClient
+    // 可选：连接成功/断线回调，由上层（main）注入以实现通知
+    OnConnected    func()
+    OnDisconnected func(err error)
 }
 
 func NewWSUpdater(s *store.MemoryKlineStore, max int) *WSUpdater {
@@ -39,11 +42,20 @@ func (u *WSUpdater) Update(ctx context.Context, symbol, interval string, k store
 // StartRealWS 预留：对接旧版 WS 监控器，订阅多个周期与符号
 // 注意：该方法涉及真实网络，建议集成测试或手动运行时使用。
 func (u *WSUpdater) StartRealWS(symbols []string, intervals []string, batchSize int) {
-	client := NewCombinedStreamsClient(batchSize)
-	if err := client.Connect(); err != nil {
-		logger.Warnf("[WS] 连接失败: %v", err)
-		return
-	}
+    client := NewCombinedStreamsClient(batchSize)
+    // 将回调透传给底层 client
+    client.SetOnConnect(func() {
+        logger.Infof("[WS] 连接成功")
+        if u.OnConnected != nil { u.OnConnected() }
+    })
+    client.SetOnDisconnect(func(err error) {
+        if err != nil { logger.Warnf("[WS] 断线: %v", err) } else { logger.Warnf("[WS] 断线") }
+        if u.OnDisconnected != nil { u.OnDisconnected(err) }
+    })
+    if err := client.Connect(); err != nil {
+        logger.Warnf("[WS] 连接失败: %v", err)
+        return
+    }
 	u.Client = client
 	for _, sym := range symbols {
 		for _, iv := range intervals {
@@ -108,39 +120,48 @@ func (u *WSUpdater) handleWSKline(ctx context.Context, symbol, interval string, 
 
 // 组合流客户端（最小实现）
 type CombinedStreamsClient struct {
-	conn        *websocket.Conn
-	mu          sync.RWMutex
-	subscribers map[string]chan []byte
-	reconnect   bool
-	done        chan struct{}
-	batchSize   int
-	subscribed  map[string]bool    // 已订阅流集合，用于重连后重放
-	pending     map[int64][]string // 等待 ACK 的订阅 id -> params
+    conn        *websocket.Conn
+    mu          sync.RWMutex
+    subscribers map[string]chan []byte
+    reconnect   bool
+    done        chan struct{}
+    batchSize   int
+    subscribed  map[string]bool    // 已订阅流集合，用于重连后重放
+    pending     map[int64][]string // 等待 ACK 的订阅 id -> params
 
 	// 运行时统计
-	stats struct {
-		reconnects      int
-		subscribeErrors int
-		lastErr         string
-	}
+    stats struct {
+        reconnects      int
+        subscribeErrors int
+        lastErr         string
+    }
+    // 事件回调
+    onConnect    func()
+    onDisconnect func(error)
 }
 
 func NewCombinedStreamsClient(batchSize int) *CombinedStreamsClient {
-	return &CombinedStreamsClient{batchSize: batchSize, subscribers: map[string]chan []byte{}, subscribed: map[string]bool{}, pending: map[int64][]string{}, reconnect: true, done: make(chan struct{})}
+    return &CombinedStreamsClient{batchSize: batchSize, subscribers: map[string]chan []byte{}, subscribed: map[string]bool{}, pending: map[int64][]string{}, reconnect: true, done: make(chan struct{})}
 }
 
 func (c *CombinedStreamsClient) Connect() error {
-	d := websocket.Dialer{HandshakeTimeout: 10 * time.Second}
-	conn, _, err := d.Dial("wss://fstream.binance.com/stream", nil)
-	if err != nil {
-		return err
-	}
-	c.mu.Lock()
-	c.conn = conn
-	c.mu.Unlock()
-	go c.read()
-	return nil
+    d := websocket.Dialer{HandshakeTimeout: 10 * time.Second}
+    conn, _, err := d.Dial("wss://fstream.binance.com/stream", nil)
+    if err != nil {
+        return err
+    }
+    c.mu.Lock()
+    c.conn = conn
+    c.mu.Unlock()
+    go c.read()
+    // 连接成功回调
+    if c.onConnect != nil { c.onConnect() }
+    return nil
 }
+
+// 事件回调设置
+func (c *CombinedStreamsClient) SetOnConnect(fn func()) { c.onConnect = fn }
+func (c *CombinedStreamsClient) SetOnDisconnect(fn func(error)) { c.onDisconnect = fn }
 
 func (c *CombinedStreamsClient) AddSubscriber(stream string, buf int) <-chan []byte {
 	ch := make(chan []byte, buf)
@@ -218,14 +239,15 @@ func (c *CombinedStreamsClient) read() {
 			time.Sleep(time.Second)
 			continue
 		}
-		_, b, err := conn.ReadMessage()
-		if err != nil {
-			logger.Warnf("[WS] 读失败: %v，尝试重连...", err)
-			c.mu.Lock()
-			c.stats.reconnects++
-			c.stats.lastErr = err.Error()
-			c.mu.Unlock()
-			time.Sleep(2 * time.Second)
+        _, b, err := conn.ReadMessage()
+        if err != nil {
+            logger.Warnf("[WS] 读失败: %v，尝试重连...", err)
+            if c.onDisconnect != nil { c.onDisconnect(err) }
+            c.mu.Lock()
+            c.stats.reconnects++
+            c.stats.lastErr = err.Error()
+            c.mu.Unlock()
+            time.Sleep(2 * time.Second)
 			// 重连
 			if err := c.Connect(); err != nil {
 				logger.Warnf("[WS] 重连失败: %v", err)

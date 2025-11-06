@@ -38,6 +38,7 @@ type Config struct {
         Engine      string `toml:"engine"`
         Aggregation string `toml:"aggregation"`
         LogEachModel bool   `toml:"log_each_model"`
+        Weights   map[string]float64 `toml:"weights"`
         DecisionIntervalSeconds int `toml:"decision_interval_seconds"`
         // 模型配置：完全通过配置文件提供，不再使用环境变量
         Models      []struct {

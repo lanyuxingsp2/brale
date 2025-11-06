@@ -1,12 +1,12 @@
 package main
 
 import (
-	"context"
-	"fmt"
-	"log"
-	"os"
-	"strings"
-	"time"
+    "context"
+    "fmt"
+    "log"
+    "os"
+    "strings"
+    "time"
 
 	"brale/internal/ai"
 	"brale/internal/coins"
@@ -71,8 +71,7 @@ func main() {
 	preheater := brmarket.NewPreheater(ks, cfg.Kline.MaxCached)
 	preheater.Preheat(ctx, syms, cfg.Kline.Periods, cfg.Kline.MaxCached)
 
-	// 启动真实 WS 订阅（复用旧版合并流客户端）：多符号 + 多周期
-	go updater.StartRealWS(syms, cfg.WS.Periods, cfg.Exchange.WSBatchSize)
+    // 先不启动 WS；待通知器与回调设置好后再启动
 
 	// 构造 AI 模型提供方与引擎适配器（first-wins 聚合）
 	/*enableDeepSeek := false
@@ -111,14 +110,12 @@ func main() {
 			logger.Warnf("未启用任何 AI 模型（请检查 ai.models 配置）")
 		}
 	}
-	// 选择聚合策略（默认 first-wins，与旧项目一致）
-	var aggregator ai.Aggregator = ai.FirstWinsAggregator{}
-	switch cfg.AI.Aggregation {
-	case "majority":
-		aggregator = ai.MajorityAggregator{}
-	case "weighted":
-		aggregator = ai.WeightedAggregator{Weights: map[string]float64{"deepseek": 1.0, "qwen": 1.0}}
-	}
+    // 选择聚合策略：默认 first-wins；meta 为多模型多数决
+    var aggregator ai.Aggregator = ai.FirstWinsAggregator{}
+    switch cfg.AI.Aggregation {
+    case "meta":
+        aggregator = ai.MetaAggregator{Weights: cfg.AI.Weights}
+    }
         engine := &ai.LegacyEngineAdapter{
             Providers:      providers,
             Agg:            aggregator,
@@ -134,11 +131,28 @@ func main() {
             TimeoutSeconds: cfg.MCP.TimeoutSeconds,
         }
 
-	// Telegram 通知器（可选）
-	var tg *notify.Telegram
-	if cfg.Notify.Telegram.Enabled {
-		tg = notify.NewTelegram(os.Getenv("TELEGRAM_BOT_TOKEN"), os.Getenv("TELEGRAM_CHAT_ID"))
-	}
+    // Telegram 通知器（可选）
+    var tg *notify.Telegram
+    if cfg.Notify.Telegram.Enabled {
+        tg = notify.NewTelegram(cfg.Notify.Telegram.BotToken, cfg.Notify.Telegram.ChatID)
+    }
+    // WS 回调：首连成功后通知一次；断线立即告警
+    firstWSConnected := false
+    updater.OnConnected = func() {
+        if tg == nil { return }
+        if !firstWSConnected {
+            firstWSConnected = true
+            _ = tg.SendText("Brale 启动成功，WS 已连接并开始订阅")
+        }
+    }
+    updater.OnDisconnected = func(err error) {
+        if tg == nil { return }
+        msg := "WS 断线"
+        if err != nil { msg = msg + ": " + err.Error() }
+        _ = tg.SendText(msg)
+    }
+    // 启动真实 WS 订阅（复用旧版合并流客户端）：多符号 + 多周期
+    go updater.StartRealWS(syms, cfg.WS.Periods, cfg.Exchange.WSBatchSize)
 
 	// 决策周期：可配置（单位：秒）
 	decisionInterval := time.Duration(cfg.AI.DecisionIntervalSeconds) * time.Second
@@ -191,11 +205,11 @@ func main() {
 		case <-decisionTicker.C:
 			// 构建最小上下文并进行决策
 			input := ai.Context{Candidates: syms}
-			res, err := engine.Decide(ctx, input)
-			if err != nil {
-				logger.Warnf("AI 决策失败: %v", err)
-				continue
-			}
+            res, err := engine.Decide(ctx, input)
+            if err != nil {
+                logger.Warnf("AI 决策失败: %v", err)
+                continue
+            }
 			if len(res.Decisions) == 0 {
 				logger.Infof("AI 决策为空（观望）")
 				continue
@@ -230,8 +244,16 @@ func main() {
 					logger.Infof("AI 原始输出: %s", cot)
 				}
 			}
-			// 排序与去重（close > open > hold/wait）
-			res.Decisions = ai.OrderAndDedup(res.Decisions)
+            // Meta 聚合发生分歧时，发送一次 Telegram 说明各模型选择与理由
+            if tg != nil && cfg.AI.Aggregation == "meta" && strings.TrimSpace(res.MetaSummary) != "" {
+                msg := "Meta 聚合投票\n" + res.MetaSummary
+                if len(msg) > 3500 { msg = msg[:3500] + "..." }
+                if err := tg.SendText(msg); err != nil {
+                    logger.Warnf("Telegram 推送失败(meta): %v", err)
+                }
+            }
+            // 排序与去重（close > open > hold/wait）
+            res.Decisions = ai.OrderAndDedup(res.Decisions)
 			// 打印并通知
 			// 周期新开仓上限统计
 			newOpens := 0
