@@ -241,6 +241,12 @@ func (a *App) Run(ctx context.Context) error {
 			}
 			res.Decisions = ai.OrderAndDedup(res.Decisions)
 
+			// 新增：最终聚合决策表（标红）
+			if len(res.Decisions) > 0 {
+				tFinal := ai.RenderFinalDecisionsTable(res.Decisions, 180)
+				logger.Infof("\n%s", tFinal)
+			}
+
 			// 选一个用于价格校验的周期
 			validateIv := ""
 			if len(a.cfg.WS.Periods) > 0 {

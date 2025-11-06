@@ -124,35 +124,47 @@ func (e *LegacyEngineAdapter) Decide(ctx context.Context, input Context) (Decisi
     }
     // 可选：在聚合前输出每个模型的原始结果（思维链 + JSON）
     if e.LogEachModel {
+        // 汇总表：所有模型的思维链
+        thoughts := make([]ThoughtRow, 0, len(outs))
+        // 汇总表：所有模型的结果（逐条决策）
+        results := make([]ResultRow, 0, 8)
+
         for _, o := range outs {
-            if o.Err != nil {
-                t1 := RenderBlockTable("AI["+o.ProviderID+"] 思维链", "失败: "+o.Err.Error())
-                t2 := RenderBlockTable("AI["+o.ProviderID+"] 结果(JSON)", "失败")
-                logger.Infof("\n%s\n%s", t1, t2)
+            if o.Err != nil || o.Raw == "" {
+                reason := ""
+                if o.Err != nil { reason = o.Err.Error() } else { reason = "无输出" }
+                thoughts = append(thoughts, ThoughtRow{Provider: o.ProviderID, Thought: reason, Failed: true})
+                results = append(results, ResultRow{Provider: o.ProviderID, Action: "失败", Reason: reason, Failed: true})
                 continue
             }
-            if o.Raw == "" {
-                t1 := RenderBlockTable("AI["+o.ProviderID+"] 思维链", "失败: 无输出")
-                t2 := RenderBlockTable("AI["+o.ProviderID+"] 结果(JSON)", "失败")
-                logger.Infof("\n%s\n%s", t1, t2)
-                continue
-            }
-            arr, start, ok := ExtractJSONArrayWithIndex(o.Raw)
+            _, start, ok := ExtractJSONArrayWithIndex(o.Raw)
             if ok {
-                cot := strings.TrimSpace(o.Raw[:start])
-                pretty := PrettyJSON(arr)
-                cot = TrimTo(cot, 1200)
-                pretty = TrimTo(pretty, 1800)
-                t1 := RenderBlockTable("AI["+o.ProviderID+"] 思维链", cot)
-                t2 := RenderBlockTable("AI["+o.ProviderID+"] 结果(JSON)", pretty)
-                logger.Infof("\n%s\n%s", t1, t2)
+                thought := strings.TrimSpace(o.Raw[:start])
+                thought = TrimTo(thought, 2400)
+                thoughts = append(thoughts, ThoughtRow{Provider: o.ProviderID, Thought: thought})
+                // 逐条填充结果
+                if len(o.Parsed.Decisions) > 0 {
+                    for _, d := range o.Parsed.Decisions {
+                        r := ResultRow{Provider: o.ProviderID, Action: d.Action, Symbol: d.Symbol, Reason: d.Reasoning}
+                        // 尽量不裁剪，但仍保底上限
+                        r.Reason = TrimTo(r.Reason, 3600)
+                        results = append(results, r)
+                    }
+                } else {
+                    // 没有解析出的决策，一样标记失败
+                    results = append(results, ResultRow{Provider: o.ProviderID, Action: "失败", Reason: "未解析到决策", Failed: true})
+                }
             } else {
-                // 解析不到 JSON 也视为失败
-                t1 := RenderBlockTable("AI["+o.ProviderID+"] 思维链", "失败")
-                t2 := RenderBlockTable("AI["+o.ProviderID+"] 结果(JSON)", "失败")
-                logger.Infof("\n%s\n%s", t1, t2)
+                thoughts = append(thoughts, ThoughtRow{Provider: o.ProviderID, Thought: "未找到 JSON 决策数组", Failed: true})
+                results = append(results, ResultRow{Provider: o.ProviderID, Action: "失败", Reason: "未找到 JSON 决策数组", Failed: true})
             }
         }
+
+        // 渲染两张合并表
+        // 更大的列宽，尽量不裁剪
+        tThoughts := RenderThoughtsTable(thoughts, 180)
+        tResults := RenderResultsTable(results, 180)
+        logger.Infof("\n%s\n%s", tThoughts, tResults)
     }
     best, err := agg.Aggregate(ctx, outs)
     if err != nil {
