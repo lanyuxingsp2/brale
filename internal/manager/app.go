@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"brale/internal/ai"
+	"brale/internal/backtest"
 	"brale/internal/coins"
 	brcfg "brale/internal/config"
 	"brale/internal/logger"
@@ -24,6 +25,10 @@ type App struct {
 	pm      *prompt.Manager
 	engine  ai.Decider
 	tg      *notify.Telegram
+
+	btStore  *backtest.Store
+	btSvc    *backtest.Service
+	btServer *backtest.HTTPServer
 
 	symbols []string
 
@@ -118,13 +123,70 @@ func NewApp(cfg *brcfg.Config) (*App, error) {
 		tg = notify.NewTelegram(cfg.Notify.Telegram.BotToken, cfg.Notify.Telegram.ChatID)
 	}
 
-	return &App{cfg: cfg, ks: ks, updater: updater, pm: pm, engine: engine, tg: tg, symbols: syms, lastOpen: map[string]time.Time{}}, nil
+	var btStore *backtest.Store
+	var btSvc *backtest.Service
+	var btHTTP *backtest.HTTPServer
+	if cfg.Backtest.Enabled {
+		var err error
+		btStore, err = backtest.NewStore(cfg.Backtest.DataDir)
+		if err != nil {
+			return nil, fmt.Errorf("初始化回测存储失败: %w", err)
+		}
+		sources := map[string]backtest.CandleSource{
+			"binance": backtest.NewBinanceSource(""),
+		}
+		btSvc, err = backtest.NewService(backtest.ServiceConfig{
+			Store:           btStore,
+			Sources:         sources,
+			DefaultExchange: cfg.Backtest.DefaultExchange,
+			RateLimitPerMin: cfg.Backtest.RateLimitPerMin,
+			MaxBatch:        cfg.Backtest.MaxBatch,
+			MaxConcurrent:   cfg.Backtest.MaxConcurrent,
+		})
+		if err != nil {
+			btStore.Close()
+			return nil, fmt.Errorf("初始化回测服务失败: %w", err)
+		}
+		btHTTP, err = backtest.NewHTTPServer(backtest.HTTPConfig{Addr: cfg.Backtest.HTTPAddr, Svc: btSvc})
+		if err != nil {
+			btStore.Close()
+			return nil, fmt.Errorf("初始化回测 HTTP 失败: %w", err)
+		}
+		logger.Infof("✓ 回测 HTTP 接口监听 %s", cfg.Backtest.HTTPAddr)
+	}
+
+	return &App{
+		cfg:      cfg,
+		ks:       ks,
+		updater:  updater,
+		pm:       pm,
+		engine:   engine,
+		tg:       tg,
+		symbols:  syms,
+		lastOpen: map[string]time.Time{},
+		btStore:  btStore,
+		btSvc:    btSvc,
+		btServer: btHTTP,
+	}, nil
 }
 
 // Run 启动 WS 并进入决策循环（阻塞直到 ctx 取消）
 func (a *App) Run(ctx context.Context) error {
 	if a == nil || a.cfg == nil {
 		return fmt.Errorf("app not initialized")
+	}
+	if a.btStore != nil {
+		defer a.btStore.Close()
+	}
+	if a.btSvc != nil {
+		a.btSvc.SetContext(ctx)
+	}
+	if a.btServer != nil {
+		go func() {
+			if err := a.btServer.Start(ctx); err != nil {
+				logger.Warnf("回测 HTTP 停止: %v", err)
+			}
+		}()
 	}
 
 	// WS 回调：首连成功后通知一次；断线立即告警
@@ -225,12 +287,12 @@ func (a *App) Run(ctx context.Context) error {
 					logger.Infof("\n%s\n%s", t1, t2)
 				}
 			}
-				// Meta 聚合发生分歧时，发送一次 Telegram 说明各模型选择与理由（完整且优雅格式）
-				if a.tg != nil && a.cfg.AI.Aggregation == "meta" && strings.TrimSpace(res.MetaSummary) != "" {
-					if err := a.sendMetaSummaryTelegram(res.MetaSummary); err != nil {
-						logger.Warnf("Telegram 推送失败(meta): %v", err)
-					}
+			// Meta 聚合发生分歧时，发送一次 Telegram 说明各模型选择与理由（完整且优雅格式）
+			if a.tg != nil && a.cfg.AI.Aggregation == "meta" && strings.TrimSpace(res.MetaSummary) != "" {
+				if err := a.sendMetaSummaryTelegram(res.MetaSummary); err != nil {
+					logger.Warnf("Telegram 推送失败(meta): %v", err)
 				}
+			}
 			// 归一化并排序去重（close > open > hold）
 			for i := range res.Decisions {
 				res.Decisions[i].Action = ai.NormalizeAction(res.Decisions[i].Action)
@@ -326,26 +388,38 @@ func (a *App) Run(ctx context.Context) error {
 						b.WriteString("```\n")
 						fmt.Fprintf(&b, "symbol   : %s\n", d.Symbol)
 						fmt.Fprintf(&b, "action   : %s\n", d.Action)
-						if validateIv != "" { fmt.Fprintf(&b, "interval : %s\n", validateIv) }
-						if entryPrice > 0 { fmt.Fprintf(&b, "entry    : %.4f\n", entryPrice) }
+						if validateIv != "" {
+							fmt.Fprintf(&b, "interval : %s\n", validateIv)
+						}
+						if entryPrice > 0 {
+							fmt.Fprintf(&b, "entry    : %.4f\n", entryPrice)
+						}
 						fmt.Fprintf(&b, "sl       : %.4f\n", d.StopLoss)
 						fmt.Fprintf(&b, "tp       : %.4f\n", d.TakeProfit)
-						if rrVal > 0 { fmt.Fprintf(&b, "RR       : %.2f\n", rrVal) }
+						if rrVal > 0 {
+							fmt.Fprintf(&b, "RR       : %.2f\n", rrVal)
+						}
 						fmt.Fprintf(&b, "leverage : %dx\n", d.Leverage)
 						fmt.Fprintf(&b, "size     : %.0f USDT\n", d.PositionSizeUSD)
-						if d.Confidence > 0 { fmt.Fprintf(&b, "conf     : %d\n", d.Confidence) }
+						if d.Confidence > 0 {
+							fmt.Fprintf(&b, "conf     : %d\n", d.Confidence)
+						}
 						fmt.Fprintf(&b, "time     : %s\n", ts)
-							b.WriteString("```\n")
+						b.WriteString("```\n")
 						if strings.TrimSpace(d.Reasoning) != "" {
 							reason := strings.TrimSpace(d.Reasoning)
-							if len(reason) > 1500 { reason = reason[:1500] + "..." }
-								reason = strings.ReplaceAll(reason, "```", "'''")
-								b.WriteString("理由:\n```\n")
+							if len(reason) > 1500 {
+								reason = reason[:1500] + "..."
+							}
+							reason = strings.ReplaceAll(reason, "```", "'''")
+							b.WriteString("理由:\n```\n")
 							b.WriteString(reason)
-								b.WriteString("\n```")
+							b.WriteString("\n```")
 						}
 						msg := b.String()
-						if len(msg) > 3800 { msg = msg[:3800] + "..." }
+						if len(msg) > 3800 {
+							msg = msg[:3800] + "..."
+						}
 						if err := a.tg.SendText(msg); err != nil {
 							logger.Warnf("Telegram 推送失败: %v", err)
 						}
@@ -400,50 +474,58 @@ func (a *App) logDecision(d ai.Decision) {
 // sendMetaSummaryTelegram 将 Meta 聚合摘要以代码块形式完整发送到 Telegram。
 // 若文本超过单条消息限制，将自动分多条消息发送，保证不截断内容。
 func (a *App) sendMetaSummaryTelegram(summary string) error {
-    if a.tg == nil { return nil }
-    header := "🗳️ Meta 聚合投票\n多模型存在分歧，采用加权多数决。\n"
-    // 清理可能干扰 Markdown 的围栏
-    body := strings.ReplaceAll(summary, "```", "'''")
-    // 切分为行，便于按行分包
-    lines := strings.Split(body, "\n")
-    if len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
-        lines = lines[:len(lines)-1]
-    }
-    // 若首行已包含聚合器生成的说明，则去重该行
-    if len(lines) > 0 && strings.TrimSpace(lines[0]) == "Meta聚合：多模型存在分歧，采用加权多数决。" {
-        lines = lines[1:]
-        // 同时去掉紧随其后的空行
-        if len(lines) > 0 && strings.TrimSpace(lines[0]) == "" {
-            lines = lines[1:]
-        }
-    }
+	if a.tg == nil {
+		return nil
+	}
+	header := "🗳️ Meta 聚合投票\n多模型存在分歧，采用加权多数决。\n"
+	// 清理可能干扰 Markdown 的围栏
+	body := strings.ReplaceAll(summary, "```", "'''")
+	// 切分为行，便于按行分包
+	lines := strings.Split(body, "\n")
+	if len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
+		lines = lines[:len(lines)-1]
+	}
+	// 若首行已包含聚合器生成的说明，则去重该行
+	if len(lines) > 0 && strings.TrimSpace(lines[0]) == "Meta聚合：多模型存在分歧，采用加权多数决。" {
+		lines = lines[1:]
+		// 同时去掉紧随其后的空行
+		if len(lines) > 0 && strings.TrimSpace(lines[0]) == "" {
+			lines = lines[1:]
+		}
+	}
 
-    // Telegram sendMessage 文本限制约 4096 字符（Markdown 可能略少），留出余量
-    const maxLen = 3900
-    prefix := header
-    chunk := prefix + "```\n"
-    clen := len(chunk)
-    for i, ln := range lines {
-        // 每行末尾 +1 换行；再加上结尾的 ```
-        if clen+len(ln)+1+3 > 4096 {
-            chunk += "```"
-            if err := a.tg.SendText(chunk); err != nil { return err }
-            prefix = "" // 后续包不再重复头部
-            chunk = "```\n"
-            clen = len(chunk)
-        }
-        chunk += ln + "\n"
-        clen += len(ln) + 1
-        // 最后一行发送
-        if i == len(lines)-1 {
-            chunk += "```"
-            if err := a.tg.SendText(chunk); err != nil { return err }
-        }
-    }
-    // 处理 lines 为空的情况
-    if len(lines) == 0 {
-        chunk = header + "```\n```"
-        if err := a.tg.SendText(chunk); err != nil { return err }
-    }
-    return nil
+	// Telegram sendMessage 文本限制约 4096 字符（Markdown 可能略少），留出余量
+	const maxLen = 3900
+	prefix := header
+	chunk := prefix + "```\n"
+	clen := len(chunk)
+	for i, ln := range lines {
+		// 每行末尾 +1 换行；再加上结尾的 ```
+		if clen+len(ln)+1+3 > 4096 {
+			chunk += "```"
+			if err := a.tg.SendText(chunk); err != nil {
+				return err
+			}
+			prefix = "" // 后续包不再重复头部
+			chunk = "```\n"
+			clen = len(chunk)
+		}
+		chunk += ln + "\n"
+		clen += len(ln) + 1
+		// 最后一行发送
+		if i == len(lines)-1 {
+			chunk += "```"
+			if err := a.tg.SendText(chunk); err != nil {
+				return err
+			}
+		}
+	}
+	// 处理 lines 为空的情况
+	if len(lines) == 0 {
+		chunk = header + "```\n```"
+		if err := a.tg.SendText(chunk); err != nil {
+			return err
+		}
+	}
+	return nil
 }

@@ -34,22 +34,22 @@ type Config struct {
 		Periods []string `toml:"periods"`
 	} `toml:"ws"`
 
-    AI struct {
-        Aggregation string `toml:"aggregation"`
-        LogEachModel bool   `toml:"log_each_model"`
-        Weights   map[string]float64 `toml:"weights"`
-        DecisionIntervalSeconds int `toml:"decision_interval_seconds"`
-        // 模型配置：完全通过配置文件提供，不再使用环境变量
-        Models      []struct {
-            ID       string `toml:"id"`         // 唯一标识（如 openai/deepseek/qwen_自定义名）
-            Provider string `toml:"provider"`   // openai | deepseek | qwen（均按 OpenAI 兼容接口调用）
-            Enabled  bool   `toml:"enabled"`
-            APIURL   string `toml:"api_url"`    // OpenAI 兼容 BaseURL，如 https://api.openai.com/v1
-            APIKey   string `toml:"api_key"`
-            Model    string `toml:"model"`      // 模型名，如 gpt-4o-mini / deepseek-chat / qwen3-max
-            Headers  map[string]string `toml:"headers"` // 可选：自定义请求头（例如 X-API-Key、OpenAI-Organization 等）
-        } `toml:"models"`
-    } `toml:"ai"`
+	AI struct {
+		Aggregation             string             `toml:"aggregation"`
+		LogEachModel            bool               `toml:"log_each_model"`
+		Weights                 map[string]float64 `toml:"weights"`
+		DecisionIntervalSeconds int                `toml:"decision_interval_seconds"`
+		// 模型配置：完全通过配置文件提供，不再使用环境变量
+		Models []struct {
+			ID       string            `toml:"id"`       // 唯一标识（如 openai/deepseek/qwen_自定义名）
+			Provider string            `toml:"provider"` // openai | deepseek | qwen（均按 OpenAI 兼容接口调用）
+			Enabled  bool              `toml:"enabled"`
+			APIURL   string            `toml:"api_url"` // OpenAI 兼容 BaseURL，如 https://api.openai.com/v1
+			APIKey   string            `toml:"api_key"`
+			Model    string            `toml:"model"`   // 模型名，如 gpt-4o-mini / deepseek-chat / qwen3-max
+			Headers  map[string]string `toml:"headers"` // 可选：自定义请求头（例如 X-API-Key、OpenAI-Organization 等）
+		} `toml:"models"`
+	} `toml:"ai"`
 
 	MCP struct {
 		TimeoutSeconds int `toml:"timeout_seconds"`
@@ -59,6 +59,16 @@ type Config struct {
 		Dir            string `toml:"dir"`
 		SystemTemplate string `toml:"system_template"`
 	} `toml:"prompt"`
+
+	Backtest struct {
+		Enabled         bool   `toml:"enabled"`
+		DataDir         string `toml:"data_dir"`
+		HTTPAddr        string `toml:"http_addr"`
+		DefaultExchange string `toml:"default_exchange"`
+		RateLimitPerMin int    `toml:"rate_limit_per_min"`
+		MaxBatch        int    `toml:"max_batch"`
+		MaxConcurrent   int    `toml:"max_concurrent"`
+	} `toml:"backtest"`
 
 	Notify struct {
 		Telegram struct {
@@ -119,13 +129,31 @@ func applyDefaults(c *Config) {
 	if c.Prompt.SystemTemplate == "" {
 		c.Prompt.SystemTemplate = "default"
 	}
-    if c.MCP.TimeoutSeconds <= 0 {
-        c.MCP.TimeoutSeconds = 120
-    }
-    // 决策周期（秒），默认 60s
-    if c.AI.DecisionIntervalSeconds <= 0 {
-        c.AI.DecisionIntervalSeconds = 60
-    }
+	if c.Backtest.DataDir == "" {
+		c.Backtest.DataDir = "data/backtest"
+	}
+	if c.Backtest.HTTPAddr == "" {
+		c.Backtest.HTTPAddr = ":9991"
+	}
+	if c.Backtest.DefaultExchange == "" {
+		c.Backtest.DefaultExchange = "binance"
+	}
+	if c.Backtest.RateLimitPerMin <= 0 {
+		c.Backtest.RateLimitPerMin = 600
+	}
+	if c.Backtest.MaxBatch <= 0 {
+		c.Backtest.MaxBatch = 1000
+	}
+	if c.Backtest.MaxConcurrent <= 0 {
+		c.Backtest.MaxConcurrent = 2
+	}
+	if c.MCP.TimeoutSeconds <= 0 {
+		c.MCP.TimeoutSeconds = 120
+	}
+	// 决策周期（秒），默认 60s
+	if c.AI.DecisionIntervalSeconds <= 0 {
+		c.AI.DecisionIntervalSeconds = 60
+	}
 	// 与旧项目保持一致：默认 RR 底线 3.0
 	if c.Advanced.MinRiskReward <= 0 {
 		c.Advanced.MinRiskReward = 3.0
@@ -165,6 +193,17 @@ func validate(c *Config) error {
 	if c.Notify.Telegram.Enabled {
 		if c.Notify.Telegram.BotToken == "" || c.Notify.Telegram.ChatID == "" {
 			return fmt.Errorf("已启用 Telegram 通知，请提供 bot_token 与 chat_id")
+		}
+	}
+	if c.Backtest.Enabled {
+		if c.Backtest.DataDir == "" {
+			return fmt.Errorf("backtest.data_dir 不能为空")
+		}
+		if c.Backtest.HTTPAddr == "" {
+			return fmt.Errorf("backtest.http_addr 不能为空")
+		}
+		if c.Backtest.RateLimitPerMin <= 0 {
+			return fmt.Errorf("backtest.rate_limit_per_min 需 > 0")
 		}
 	}
 	return nil
