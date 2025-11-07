@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	toml "github.com/pelletier/go-toml/v2"
 )
@@ -35,10 +36,12 @@ type Config struct {
 	} `toml:"ws"`
 
 	AI struct {
-		Aggregation             string             `toml:"aggregation"`
-		LogEachModel            bool               `toml:"log_each_model"`
-		Weights                 map[string]float64 `toml:"weights"`
-		DecisionIntervalSeconds int                `toml:"decision_interval_seconds"`
+		Aggregation             string                    `toml:"aggregation"`
+		LogEachModel            bool                      `toml:"log_each_model"`
+		Weights                 map[string]float64        `toml:"weights"`
+		DecisionIntervalSeconds int                       `toml:"decision_interval_seconds"`
+		ActiveHorizon           string                    `toml:"active_horizon"`
+		HoldingProfiles         map[string]HorizonProfile `toml:"holding_horizon_profiles"`
 		// 模型配置：完全通过配置文件提供，不再使用环境变量
 		Models []struct {
 			ID       string            `toml:"id"`       // 唯一标识（如 openai/deepseek/qwen_自定义名）
@@ -86,6 +89,112 @@ type Config struct {
 	} `toml:"advanced"`
 }
 
+// HorizonProfile 描述特定持仓周期所需的时间段与指标参数。
+type HorizonProfile struct {
+	EntryTimeframes      []string          `toml:"entry_timeframes"`
+	ConfirmTimeframes    []string          `toml:"confirm_timeframes"`
+	BackgroundTimeframes []string          `toml:"background_timeframes"`
+	Indicators           HorizonIndicators `toml:"indicators"`
+}
+
+// HorizonIndicators 组合该周期要使用的关键指标参数。
+type HorizonIndicators struct {
+	EMA EMAConfig `toml:"ema"`
+	RSI RSIConfig `toml:"rsi"`
+}
+
+type EMAConfig struct {
+	Fast int `toml:"fast"`
+	Mid  int `toml:"mid"`
+	Slow int `toml:"slow"`
+}
+
+type RSIConfig struct {
+	Period     int     `toml:"period"`
+	Oversold   float64 `toml:"oversold"`
+	Overbought float64 `toml:"overbought"`
+}
+
+// AllTimeframes 返回去重后的完整时间段列表（entry → confirm → background）。
+func (p HorizonProfile) AllTimeframes() []string {
+	seen := map[string]struct{}{}
+	var out []string
+	add := func(list []string) {
+		for _, tf := range list {
+			tf = strings.TrimSpace(tf)
+			if tf == "" {
+				continue
+			}
+			if _, ok := seen[tf]; ok {
+				continue
+			}
+			seen[tf] = struct{}{}
+			out = append(out, tf)
+		}
+	}
+	add(p.EntryTimeframes)
+	add(p.ConfirmTimeframes)
+	add(p.BackgroundTimeframes)
+	return out
+}
+
+func normalizeHorizonProfile(p HorizonProfile) HorizonProfile {
+	if len(p.EntryTimeframes) == 0 && len(p.ConfirmTimeframes) == 0 && len(p.BackgroundTimeframes) == 0 {
+		p.EntryTimeframes = []string{"15m"}
+	}
+	if p.Indicators.EMA.Fast <= 0 {
+		p.Indicators.EMA.Fast = 21
+	}
+	if p.Indicators.EMA.Mid <= 0 {
+		p.Indicators.EMA.Mid = 50
+	}
+	if p.Indicators.EMA.Slow <= 0 {
+		p.Indicators.EMA.Slow = 200
+	}
+	if p.Indicators.RSI.Period <= 0 {
+		p.Indicators.RSI.Period = 14
+	}
+	if p.Indicators.RSI.Oversold == 0 {
+		p.Indicators.RSI.Oversold = 30
+	}
+	if p.Indicators.RSI.Overbought == 0 {
+		p.Indicators.RSI.Overbought = 70
+	}
+	return p
+}
+
+func defaultHorizonProfiles() map[string]HorizonProfile {
+	return map[string]HorizonProfile{
+		"one_hour": normalizeHorizonProfile(HorizonProfile{
+			EntryTimeframes:      []string{"5m", "15m"},
+			ConfirmTimeframes:    []string{"1h"},
+			BackgroundTimeframes: []string{"4h"},
+			Indicators: HorizonIndicators{
+				EMA: EMAConfig{Fast: 21, Mid: 50, Slow: 200},
+				RSI: RSIConfig{Period: 14, Oversold: 33, Overbought: 68},
+			},
+		}),
+		"four_hour": normalizeHorizonProfile(HorizonProfile{
+			EntryTimeframes:      []string{"15m", "30m"},
+			ConfirmTimeframes:    []string{"4h"},
+			BackgroundTimeframes: []string{"1d"},
+			Indicators: HorizonIndicators{
+				EMA: EMAConfig{Fast: 21, Mid: 50, Slow: 200},
+				RSI: RSIConfig{Period: 14, Oversold: 30, Overbought: 70},
+			},
+		}),
+		"one_day": normalizeHorizonProfile(HorizonProfile{
+			EntryTimeframes:      []string{"1h"},
+			ConfirmTimeframes:    []string{"4h", "1d"},
+			BackgroundTimeframes: []string{"1w"},
+			Indicators: HorizonIndicators{
+				EMA: EMAConfig{Fast: 21, Mid: 50, Slow: 200},
+				RSI: RSIConfig{Period: 14, Oversold: 35, Overbought: 65},
+			},
+		}),
+	}
+}
+
 // Load 读取并解析 TOML 配置文件，并设置缺省值与基本校验
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
@@ -114,14 +223,8 @@ func applyDefaults(c *Config) {
 	if c.Exchange.WSBatchSize <= 0 {
 		c.Exchange.WSBatchSize = 150
 	}
-	if len(c.Kline.Periods) == 0 {
-		c.Kline.Periods = []string{"5m"}
-	}
 	if c.Kline.MaxCached <= 0 {
 		c.Kline.MaxCached = 100
-	}
-	if len(c.WS.Periods) == 0 {
-		c.WS.Periods = []string{"3m", "4h"}
 	}
 	if c.Prompt.Dir == "" {
 		c.Prompt.Dir = "prompts"
@@ -129,6 +232,38 @@ func applyDefaults(c *Config) {
 	if c.Prompt.SystemTemplate == "" {
 		c.Prompt.SystemTemplate = "default"
 	}
+
+	// Horizon profiles 与周期派生
+	if len(c.AI.HoldingProfiles) == 0 {
+		c.AI.HoldingProfiles = defaultHorizonProfiles()
+	} else {
+		normalized := make(map[string]HorizonProfile, len(c.AI.HoldingProfiles))
+		for name, profile := range c.AI.HoldingProfiles {
+			normalized[name] = normalizeHorizonProfile(profile)
+		}
+		c.AI.HoldingProfiles = normalized
+	}
+	if c.AI.ActiveHorizon == "" {
+		c.AI.ActiveHorizon = "one_hour"
+	}
+	if _, ok := c.AI.HoldingProfiles[c.AI.ActiveHorizon]; !ok {
+		for name := range c.AI.HoldingProfiles {
+			c.AI.ActiveHorizon = name
+			break
+		}
+	}
+	activeProfile := c.AI.HoldingProfiles[c.AI.ActiveHorizon]
+	derivedIntervals := activeProfile.AllTimeframes()
+	if len(derivedIntervals) == 0 {
+		derivedIntervals = []string{"5m"}
+	}
+	if len(c.Kline.Periods) == 0 {
+		c.Kline.Periods = append([]string(nil), derivedIntervals...)
+	}
+	if len(c.WS.Periods) == 0 {
+		c.WS.Periods = append([]string(nil), derivedIntervals...)
+	}
+
 	if c.Backtest.DataDir == "" {
 		c.Backtest.DataDir = "data/backtest"
 	}
@@ -171,6 +306,17 @@ func validate(c *Config) error {
 	if c.Symbols.Provider == "default" && len(c.Symbols.DefaultList) == 0 {
 		return fmt.Errorf("symbols.default_list 不能为空（当 provider=default 时）")
 	}
+	if len(c.AI.HoldingProfiles) == 0 {
+		return fmt.Errorf("ai.holding_horizon_profiles 至少需要一个 profile")
+	}
+	if _, ok := c.AI.HoldingProfiles[c.AI.ActiveHorizon]; !ok {
+		return fmt.Errorf("未找到 ai.active_horizon=%s 对应的 profile", c.AI.ActiveHorizon)
+	}
+	for name, profile := range c.AI.HoldingProfiles {
+		if err := validateHorizonProfile(name, profile); err != nil {
+			return err
+		}
+	}
 	if len(c.Kline.Periods) == 0 {
 		return fmt.Errorf("kline.periods 至少需要一个周期")
 	}
@@ -209,13 +355,34 @@ func validate(c *Config) error {
 	return nil
 }
 
+func validateHorizonProfile(name string, p HorizonProfile) error {
+	if len(p.AllTimeframes()) == 0 {
+		return fmt.Errorf("holding profile %s 至少需要一个时间周期", name)
+	}
+	for _, tf := range p.AllTimeframes() {
+		if !isValidInterval(tf) {
+			return fmt.Errorf("holding profile %s 包含非法周期: %s", name, tf)
+		}
+	}
+	if p.Indicators.EMA.Fast <= 0 || p.Indicators.EMA.Mid <= 0 || p.Indicators.EMA.Slow <= 0 {
+		return fmt.Errorf("holding profile %s 的 EMA 参数需为正整数", name)
+	}
+	if p.Indicators.RSI.Period <= 0 {
+		return fmt.Errorf("holding profile %s 的 RSI.period 需 > 0", name)
+	}
+	if p.Indicators.RSI.Overbought <= p.Indicators.RSI.Oversold {
+		return fmt.Errorf("holding profile %s 的 RSI overbought 需大于 oversold", name)
+	}
+	return nil
+}
+
 // isValidInterval 简易校验：以数字开头，以 m/h/d 结尾
 func isValidInterval(s string) bool {
 	if s == "" {
 		return false
 	}
 	suf := s[len(s)-1]
-	if suf != 'm' && suf != 'h' && suf != 'd' {
+	if suf != 'm' && suf != 'h' && suf != 'd' && suf != 'w' {
 		return false
 	}
 	for i := 0; i < len(s)-1; i++ {

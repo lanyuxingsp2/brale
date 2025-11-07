@@ -14,16 +14,19 @@ default_list = ["BTCUSDT", "ETHUSDT"]
 # api_url = "http://your-service/symbols" # when provider=http
 
 [kline]
-periods = ["5m", "15m", "30m", "1h"]
+# 若留空将自动根据 active horizon 推导
+periods = []
 max_cached = 100
 
 [ws]
-periods = ["5m", "15m", "30m", "1h"]
+# 若留空将自动根据 active horizon 推导
+periods = []
 
 [ai]
 aggregation = "first-wins" # 可选："meta"（多模型加权多数决）
 log_each_model = false
 decision_interval_seconds = 60
+active_horizon = "one_hour"
 models = [
   # OpenAI compatible entries. Keep enabled=false and api_key empty in public config.
   { id = "openai",  provider = "openai",  enabled = false, api_url = "https://api.openai.com/v1", api_key = "", model = "gpt-4o-mini" },
@@ -34,6 +37,45 @@ models = [
 # 可选：当 aggregation = "meta" 时，按 Provider ID 配置权重（缺省均为 1.0）。
 # 提示：id 来自 models[] 的 id；若未设置，程序会自动生成如 "openai:gpt-4o-mini"。
 weights = {}
+
+[ai.holding_horizon_profiles.one_hour]
+entry_timeframes = ["5m", "15m"]
+confirm_timeframes = ["1h"]
+background_timeframes = ["4h"]
+[ai.holding_horizon_profiles.one_hour.indicators.ema]
+fast = 21
+mid = 50
+slow = 200
+[ai.holding_horizon_profiles.one_hour.indicators.rsi]
+period = 14
+oversold = 33
+overbought = 68
+
+[ai.holding_horizon_profiles.four_hour]
+entry_timeframes = ["15m", "30m"]
+confirm_timeframes = ["4h"]
+background_timeframes = ["1d"]
+[ai.holding_horizon_profiles.four_hour.indicators.ema]
+fast = 21
+mid = 50
+slow = 200
+[ai.holding_horizon_profiles.four_hour.indicators.rsi]
+period = 14
+oversold = 30
+overbought = 70
+
+[ai.holding_horizon_profiles.one_day]
+entry_timeframes = ["1h"]
+confirm_timeframes = ["4h", "1d"]
+background_timeframes = ["1w"]
+[ai.holding_horizon_profiles.one_day.indicators.ema]
+fast = 21
+mid = 50
+slow = 200
+[ai.holding_horizon_profiles.one_day.indicators.rsi]
+period = 14
+oversold = 35
+overbought = 65
 
 # If your provider requires a non-standard header (e.g., X-API-Key), you can add:
 # { id = "custom", provider = "openai", enabled = false, api_url = "https://your-base/v1", model = "your-model",

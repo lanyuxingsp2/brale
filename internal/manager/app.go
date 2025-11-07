@@ -30,7 +30,11 @@ type App struct {
 	btSvc    *backtest.Service
 	btServer *backtest.HTTPServer
 
-	symbols []string
+	symbols     []string
+	horizon     brcfg.HorizonProfile
+	hIntervals  []string
+	horizonName string
+	hSummary    string
 
 	// 内部运行状态
 	lastOpen map[string]time.Time // 符号+方向 -> 上次开仓时间
@@ -58,6 +62,19 @@ func NewApp(cfg *brcfg.Config) (*App, error) {
 	}
 	logger.Infof("✓ 已加载 %d 个交易对: %v", len(syms), syms)
 
+	// 选定持仓周期 profile
+	horizon, ok := cfg.AI.HoldingProfiles[cfg.AI.ActiveHorizon]
+	if !ok {
+		return nil, fmt.Errorf("未找到持仓周期配置: %s", cfg.AI.ActiveHorizon)
+	}
+	hIntervals := horizon.AllTimeframes()
+	if len(hIntervals) == 0 {
+		return nil, fmt.Errorf("持仓周期 %s 未配置任何 k 线周期", cfg.AI.ActiveHorizon)
+	}
+	logger.Infof("✓ 启用持仓周期 %s，K线周期=%v", cfg.AI.ActiveHorizon, hIntervals)
+	hSummary := formatHorizonSummary(cfg.AI.ActiveHorizon, horizon, hIntervals)
+	logger.Infof("[horizon]\n%s", hSummary)
+
 	// 提示词
 	pm := prompt.NewManager(cfg.Prompt.Dir)
 	if err := pm.Load(); err != nil {
@@ -75,7 +92,7 @@ func NewApp(cfg *brcfg.Config) (*App, error) {
 
 	// 预热
 	preheater := brmarket.NewPreheater(ks, cfg.Kline.MaxCached)
-	preheater.Preheat(ctx, syms, cfg.Kline.Periods, cfg.Kline.MaxCached)
+	preheater.Preheat(ctx, syms, hIntervals, cfg.Kline.MaxCached)
 
 	// 模型 Providers
 	var modelCfgs []ai.ModelCfg
@@ -108,7 +125,9 @@ func NewApp(cfg *brcfg.Config) (*App, error) {
 		PromptMgr:      pm,
 		SystemTemplate: cfg.Prompt.SystemTemplate,
 		KStore:         ks,
-		Intervals:      cfg.WS.Periods,
+		Intervals:      hIntervals,
+		Horizon:        horizon,
+		HorizonName:    cfg.AI.ActiveHorizon,
 		Parallel:       true,
 		LogEachModel:   cfg.AI.LogEachModel,
 		Metrics:        brmarket.NewDefaultMetricsFetcher(""),
@@ -156,17 +175,21 @@ func NewApp(cfg *brcfg.Config) (*App, error) {
 	}
 
 	return &App{
-		cfg:      cfg,
-		ks:       ks,
-		updater:  updater,
-		pm:       pm,
-		engine:   engine,
-		tg:       tg,
-		symbols:  syms,
-		lastOpen: map[string]time.Time{},
-		btStore:  btStore,
-		btSvc:    btSvc,
-		btServer: btHTTP,
+		cfg:         cfg,
+		ks:          ks,
+		updater:     updater,
+		pm:          pm,
+		engine:      engine,
+		tg:          tg,
+		symbols:     syms,
+		horizon:     horizon,
+		hIntervals:  append([]string(nil), hIntervals...),
+		horizonName: cfg.AI.ActiveHorizon,
+		hSummary:    hSummary,
+		lastOpen:    map[string]time.Time{},
+		btStore:     btStore,
+		btSvc:       btSvc,
+		btServer:    btHTTP,
 	}, nil
 }
 
@@ -197,7 +220,11 @@ func (a *App) Run(ctx context.Context) error {
 		}
 		if !firstWSConnected {
 			firstWSConnected = true
-			_ = a.tg.SendText("Brale 启动成功，WS 已连接并开始订阅")
+			msg := "*Brale 启动成功* ✅\nWS 已连接并开始订阅"
+			if summary := strings.TrimSpace(a.hSummary); summary != "" {
+				msg = msg + "\n```text\n" + summary + "\n```"
+			}
+			_ = a.tg.SendText(msg)
 		}
 	}
 	a.updater.OnDisconnected = func(err error) {
@@ -211,7 +238,7 @@ func (a *App) Run(ctx context.Context) error {
 		_ = a.tg.SendText(msg)
 	}
 	// 启动真实 WS 订阅
-	go a.updater.StartRealWS(a.symbols, a.cfg.WS.Periods, a.cfg.Exchange.WSBatchSize)
+	go a.updater.StartRealWS(a.symbols, a.hIntervals, a.cfg.Exchange.WSBatchSize)
 
 	// 决策与心跳 ticker
 	decisionInterval := time.Duration(a.cfg.AI.DecisionIntervalSeconds) * time.Second
@@ -238,7 +265,7 @@ func (a *App) Run(ctx context.Context) error {
 		case <-cacheTicker.C:
 			// 打印缓存状态
 			for _, sym := range a.symbols {
-				for _, iv := range a.cfg.WS.Periods {
+				for _, iv := range a.hIntervals {
 					if kl, err := a.ks.Get(ctx, sym, iv); err == nil {
 						cnt := len(kl)
 						tail := ""
@@ -307,8 +334,8 @@ func (a *App) Run(ctx context.Context) error {
 
 			// 选一个用于价格校验的周期
 			validateIv := ""
-			if len(a.cfg.WS.Periods) > 0 {
-				validateIv = a.cfg.WS.Periods[0]
+			if len(a.hIntervals) > 0 {
+				validateIv = a.hIntervals[0]
 			} else if len(a.cfg.Kline.Periods) > 0 {
 				validateIv = a.cfg.Kline.Periods[0]
 			}
@@ -428,6 +455,26 @@ func (a *App) Run(ctx context.Context) error {
 			}
 		}
 	}
+}
+
+func formatHorizonSummary(name string, profile brcfg.HorizonProfile, intervals []string) string {
+	toList := func(items []string) string {
+		if len(items) == 0 {
+			return "-"
+		}
+		return strings.Join(items, ", ")
+	}
+	ind := profile.Indicators
+	lines := []string{
+		fmt.Sprintf("持仓周期：%s", name),
+		fmt.Sprintf("- 入场周期：%s", toList(profile.EntryTimeframes)),
+		fmt.Sprintf("- 确认周期：%s", toList(profile.ConfirmTimeframes)),
+		fmt.Sprintf("- 背景周期：%s", toList(profile.BackgroundTimeframes)),
+		fmt.Sprintf("- 订阅/缓存周期：%s", toList(intervals)),
+		fmt.Sprintf("- EMA(fast/mid/slow) = %d / %d / %d", ind.EMA.Fast, ind.EMA.Mid, ind.EMA.Slow),
+		fmt.Sprintf("- RSI(period=%d, oversold=%.0f, overbought=%.0f)", ind.RSI.Period, ind.RSI.Oversold, ind.RSI.Overbought),
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (a *App) logDecision(d ai.Decision) {
