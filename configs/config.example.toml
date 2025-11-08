@@ -27,6 +27,9 @@ aggregation = "first-wins" # 可选："meta"（多模型加权多数决）
 log_each_model = false
 decision_interval_seconds = 60
 active_horizon = "one_hour"
+include_last_decision = true
+last_decision_max_age_seconds = 3600
+decision_log_path = "data/live/decisions.db"
 models = [
   # OpenAI compatible entries. Keep enabled=false and api_key empty in public config.
   { id = "openai",  provider = "openai",  enabled = false, api_url = "https://api.openai.com/v1", api_key = "", model = "gpt-4o-mini" },

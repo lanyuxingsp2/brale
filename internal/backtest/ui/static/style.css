@@ -64,6 +64,19 @@ section h2 {
   flex-direction: column;
 }
 
+.filter-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.filter-grid .field {
+  flex: 1 1 160px;
+  display: flex;
+  flex-direction: column;
+}
+
 input, select, button, textarea {
   font: inherit;
 }
@@ -169,7 +182,12 @@ footer {
   }
 
   section:nth-child(3),
-  section:nth-child(4) {
+  section:nth-child(4),
+  section:nth-child(5) {
+    grid-column: 1 / -1;
+  }
+
+  .full-width {
     grid-column: 1 / -1;
   }
 }

@@ -8,10 +8,12 @@ import "context"
 
 // Context 引擎输入上下文（简化版）：可扩展为账户/持仓/候选币/指标等
 type Context struct {
-	Candidates []string              // 候选币种
-	Market     map[string]MarketData // 各币种聚合指标（可后续填充）
-	Positions  []PositionSnapshot    // 当前持仓信息
-	Prompt     PromptBundle          // System/User 提示词
+	Candidates    []string              // 候选币种
+	Market        map[string]MarketData // 各币种聚合指标（可后续填充）
+	Positions     []PositionSnapshot    // 当前持仓信息
+	Prompt        PromptBundle          // System/User 提示词
+	LastDecisions []DecisionMemory      // 上一次决策（可选）
+	LastRawJSON   string                // 上一次决策的原始 JSON（可选）
 }
 
 // MarketData 占位结构：后续可接 K 线指标/OI/Funding 等

@@ -11,6 +11,7 @@ import (
 
 	"brale/internal/ai"
 	brcfg "brale/internal/config"
+	"brale/internal/execution"
 	"brale/internal/logger"
 
 	"github.com/google/uuid"
@@ -31,6 +32,7 @@ type SimulatorConfig struct {
 	Strategy       StrategyFactory
 	Notifier       Notifier
 	MaxConcurrent  int
+	OrderRecorder  execution.Recorder
 }
 
 // Simulator 负责将历史 K 线 + 决策策略推演为资金曲线。
@@ -43,6 +45,7 @@ type Simulator struct {
 	defaultProf string
 	factory     StrategyFactory
 	notifier    Notifier
+	orderRec    execution.Recorder
 
 	sem     chan struct{}
 	baseCtx context.Context
@@ -74,6 +77,10 @@ func NewSimulator(cfg SimulatorConfig) (*Simulator, error) {
 	if maxConcurrent <= 0 {
 		maxConcurrent = 1
 	}
+	orderRec := cfg.OrderRecorder
+	if orderRec == nil {
+		orderRec = NewResultRecorder(cfg.ResultStore)
+	}
 	return &Simulator{
 		store:       cfg.CandleStore,
 		results:     cfg.ResultStore,
@@ -83,6 +90,7 @@ func NewSimulator(cfg SimulatorConfig) (*Simulator, error) {
 		defaultProf: defaultProf,
 		factory:     cfg.Strategy,
 		notifier:    cfg.Notifier,
+		orderRec:    orderRec,
 		sem:         make(chan struct{}, maxConcurrent),
 		baseCtx:     context.Background(),
 	}, nil
@@ -202,7 +210,7 @@ func (s *Simulator) runLoop(runID string, cfg RunConfig, profile brcfg.HorizonPr
 
 	ctx := s.ctx()
 	s.results.UpdateRunStatus(ctx, runID, RunStatusRunning, "初始化策略…")
-	runner := newSimRunner(s.store, s.results, s.factory, s.fetcher, s.lookbacks, cfg, profile, s.notifier)
+	runner := newSimRunner(s.store, s.results, s.factory, s.fetcher, s.lookbacks, cfg, profile, s.notifier, s.orderRec)
 	if err := runner.Run(ctx, runID); err != nil {
 		logger.Warnf("[backtest] run %s 失败: %v", runID, err)
 		_ = s.results.UpdateRunStatus(ctx, runID, RunStatusFailed, err.Error())
@@ -211,27 +219,41 @@ func (s *Simulator) runLoop(runID string, cfg RunConfig, profile brcfg.HorizonPr
 }
 
 type simRunner struct {
-	store     *Store
-	results   *ResultStore
-	fetcher   *Service
-	lookbacks map[string]int
-	factory   StrategyFactory
-	cfg       RunConfig
-	profile   brcfg.HorizonProfile
-	notifier  Notifier
+	store         *Store
+	results       *ResultStore
+	fetcher       *Service
+	lookbacks     map[string]int
+	factory       StrategyFactory
+	cfg           RunConfig
+	profile       brcfg.HorizonProfile
+	notifier      Notifier
+	orderRecorder execution.Recorder
 }
 
-func newSimRunner(store *Store, results *ResultStore, factory StrategyFactory, fetcher *Service, lookbacks map[string]int, cfg RunConfig, profile brcfg.HorizonProfile, notifier Notifier) *simRunner {
+func newSimRunner(store *Store, results *ResultStore, factory StrategyFactory, fetcher *Service, lookbacks map[string]int, cfg RunConfig, profile brcfg.HorizonProfile, notifier Notifier, recorder execution.Recorder) *simRunner {
 	return &simRunner{
-		store:     store,
-		results:   results,
-		fetcher:   fetcher,
-		lookbacks: lookbacks,
-		factory:   factory,
-		cfg:       cfg,
-		profile:   profile,
-		notifier:  notifier,
+		store:         store,
+		results:       results,
+		fetcher:       fetcher,
+		lookbacks:     lookbacks,
+		factory:       factory,
+		cfg:           cfg,
+		profile:       profile,
+		notifier:      notifier,
+		orderRecorder: recorder,
 	}
+}
+
+func (r *simRunner) recordOrder(ctx context.Context, order execution.Order) int64 {
+	if r.orderRecorder == nil {
+		return 0
+	}
+	id, err := r.orderRecorder.RecordOrder(ctx, &order)
+	if err != nil {
+		logger.Warnf("[backtest] run %s 记录订单失败: %v", order.RunID, err)
+		return 0
+	}
+	return id
 }
 
 func (r *simRunner) Run(ctx context.Context, runID string) error {
@@ -456,8 +478,9 @@ func (r *simRunner) handleOpen(ctx context.Context, runID string, state *portfol
 	takeProfit := d.TakeProfit
 	stopLoss := d.StopLoss
 	expectedRR := calcExpectedRR(side, price, takeProfit, stopLoss)
-	order := Order{
+	orderID := r.recordOrder(ctx, execution.Order{
 		RunID:      runID,
+		Symbol:     r.cfg.Symbol,
 		Action:     action,
 		Side:       side,
 		Type:       "market",
@@ -472,17 +495,14 @@ func (r *simRunner) handleOpen(ctx context.Context, runID string, state *portfol
 		StopLoss:   stopLoss,
 		ExpectedRR: expectedRR,
 		Decision:   rawDecision,
-	}
-	if _, err := r.results.InsertOrder(ctx, &order); err != nil {
-		logger.Warnf("[backtest] run %s 记录订单失败: %v", runID, err)
-	}
+	})
 	state.orders++
 	state.position = &positionState{
 		side:        side,
 		entryPrice:  price,
 		qty:         qty,
 		entryTime:   candle.CloseTime,
-		entryOrder:  order.ID,
+		entryOrder:  orderID,
 		entryNotion: sizeUSD,
 		takeProfit:  takeProfit,
 		stopLoss:    stopLoss,
@@ -507,8 +527,9 @@ func (r *simRunner) handleClose(ctx context.Context, runID string, state *portfo
 	state.balance += pnl - fee
 
 	rawDecision, _ := json.Marshal(d)
-	order := Order{
+	orderID := r.recordOrder(ctx, execution.Order{
 		RunID:      runID,
+		Symbol:     r.cfg.Symbol,
 		Action:     action,
 		Side:       side,
 		Type:       "market",
@@ -523,17 +544,14 @@ func (r *simRunner) handleClose(ctx context.Context, runID string, state *portfo
 		StopLoss:   pos.stopLoss,
 		ExpectedRR: pos.expectedRR,
 		Decision:   rawDecision,
-	}
-	if _, err := r.results.InsertOrder(ctx, &order); err != nil {
-		logger.Warnf("[backtest] run %s 记录平仓订单失败: %v", runID, err)
-	}
+	})
 	state.orders++
 	position := Position{
 		RunID:        runID,
 		Symbol:       r.cfg.Symbol,
 		Side:         side,
 		EntryOrderID: pos.entryOrder,
-		ExitOrderID:  order.ID,
+		ExitOrderID:  orderID,
 		EntryPrice:   pos.entryPrice,
 		ExitPrice:    price,
 		Quantity:     pos.qty,
@@ -589,8 +607,9 @@ func (r *simRunner) handlePartialClose(ctx context.Context, runID string, state 
 	state.balance += pnl - fee
 
 	rawDecision, _ := json.Marshal(d)
-	order := Order{
+	orderID := r.recordOrder(ctx, execution.Order{
 		RunID:      runID,
+		Symbol:     r.cfg.Symbol,
 		Action:     "partial_close",
 		Side:       pos.side,
 		Type:       "market",
@@ -605,10 +624,7 @@ func (r *simRunner) handlePartialClose(ctx context.Context, runID string, state 
 		StopLoss:   pos.stopLoss,
 		ExpectedRR: pos.expectedRR,
 		Decision:   rawDecision,
-	}
-	if _, err := r.results.InsertOrder(ctx, &order); err != nil {
-		logger.Warnf("[backtest] run %s 记录部分平仓失败: %v", runID, err)
-	}
+	})
 	state.orders++
 
 	position := Position{
@@ -616,7 +632,7 @@ func (r *simRunner) handlePartialClose(ctx context.Context, runID string, state 
 		Symbol:       r.cfg.Symbol,
 		Side:         pos.side,
 		EntryOrderID: pos.entryOrder,
-		ExitOrderID:  order.ID,
+		ExitOrderID:  orderID,
 		EntryPrice:   pos.entryPrice,
 		ExitPrice:    execPrice,
 		Quantity:     closeQty,
@@ -1068,8 +1084,9 @@ func (r *simRunner) handleAdjustStopLoss(ctx context.Context, runID string, stat
 		"new_stop_loss": newSL,
 	}
 	metaJSON, _ := json.Marshal(meta)
-	order := Order{
+	if _, err := r.orderRecorder.RecordOrder(ctx, &execution.Order{
 		RunID:      runID,
+		Symbol:     r.cfg.Symbol,
 		Action:     "adjust_stop_loss",
 		Side:       pos.side,
 		Type:       "adjustment",
@@ -1085,8 +1102,7 @@ func (r *simRunner) handleAdjustStopLoss(ctx context.Context, runID string, stat
 		ExpectedRR: pos.expectedRR,
 		Decision:   rawDecision,
 		Meta:       metaJSON,
-	}
-	if _, err := r.results.InsertOrder(ctx, &order); err != nil {
+	}); err != nil {
 		logger.Warnf("[backtest] run %s 记录调整止损失败: %v", runID, err)
 	}
 }

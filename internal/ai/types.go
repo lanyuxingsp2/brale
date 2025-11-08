@@ -1,5 +1,7 @@
 package ai
 
+import "time"
+
 // 中文说明：
 // 本文件定义 AI 决策相关的通用数据结构，供引擎与聚合器使用。
 
@@ -23,4 +25,12 @@ type DecisionResult struct {
 	RawJSON   string // 提取到的 JSON 决策数组文本
 	// MetaSummary: 当使用 meta 聚合时，记录各模型投票与理由的汇总文本（用于通知）
 	MetaSummary string
+}
+
+// DecisionMemory 记录上一轮决策（供 Prompt 回顾）。
+type DecisionMemory struct {
+	Symbol    string     `json:"symbol"`
+	Horizon   string     `json:"horizon"`
+	DecidedAt time.Time  `json:"decided_at"`
+	Decisions []Decision `json:"decisions"`
 }

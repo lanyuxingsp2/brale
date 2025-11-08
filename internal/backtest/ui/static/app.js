@@ -32,6 +32,18 @@ function formatTs(ms) {
   return date.toLocaleString();
 }
 
+function formatTsValue(val) {
+  if (!val) return "-";
+  if (typeof val === "number") {
+    return formatTs(val);
+  }
+  const ts = Date.parse(val);
+  if (Number.isNaN(ts)) {
+    return val;
+  }
+  return formatTs(ts);
+}
+
 function escapeHTML(str = "") {
   return str
     .replace(/&/g, "&amp;")
@@ -187,15 +199,42 @@ function updateSnapshotsTable(list) {
 }
 
 function summarizeDecisions(decisions = []) {
-  if (!decisions.length) {
+  const list = Array.isArray(decisions) ? decisions : [];
+  if (!list.length) {
     return "无";
   }
-  return decisions
+  return list
     .map((d) => `${d.symbol || ""} ${d.action || ""}`.trim())
     .join("; ");
 }
 
+function renderPromptDetails(log) {
+  return `
+    <details>
+      <summary>查看</summary>
+      <div class="prompt-block">
+        <strong>System</strong>
+        <pre>${escapeHTML(log.system_prompt || "-")}</pre>
+      </div>
+      <div class="prompt-block">
+        <strong>User</strong>
+        <pre>${escapeHTML(log.user_prompt || "-")}</pre>
+      </div>
+      <div class="prompt-block">
+        <strong>Raw</strong>
+        <pre>${escapeHTML(log.raw_output || log.raw_json || "-")}</pre>
+      </div>
+    </details>
+  `;
+}
+
+function formatSymbols(list = []) {
+  if (!list || !list.length) return "-";
+  return list.join(", ");
+}
+
 function updateLogsTable(list) {
+  list = Array.isArray(list) ? list : [];
   const body = document.getElementById("logsBody");
   body.innerHTML = "";
   if (!list.length) {
@@ -219,30 +258,80 @@ function updateLogsTable(list) {
       log.note && log.note.length
         ? `<br/><small>${escapeHTML(previewText(log.note, 80))}</small>`
         : "";
-    const inputDetails = `
-      <details>
-        <summary>查看</summary>
-        <div class="prompt-block">
-          <strong>System</strong>
-          <pre>${escapeHTML(log.system_prompt || "-")}</pre>
-        </div>
-        <div class="prompt-block">
-          <strong>User</strong>
-          <pre>${escapeHTML(log.user_prompt || "-")}</pre>
-        </div>
-        <div class="prompt-block">
-          <strong>Raw</strong>
-          <pre>${escapeHTML(log.raw_output || log.raw_json || "-")}</pre>
-        </div>
-      </details>
-    `;
     row.innerHTML = `
       <td>${formatTs(log.candle_ts)}</td>
       <td>${log.timeframe}</td>
       <td>${provider}</td>
       <td>${summarizeDecisions(log.decisions)}</td>
       <td>${status}${meta}${note}</td>
-      <td>${inputDetails}</td>
+      <td>${renderPromptDetails(log)}</td>
+    `;
+    body.appendChild(row);
+  });
+}
+
+function updateLiveLogsTable(list) {
+  list = Array.isArray(list) ? list : [];
+  const body = document.getElementById("liveLogsBody");
+  body.innerHTML = "";
+  if (!list.length) {
+    const row = document.createElement("tr");
+    row.innerHTML = `<td colspan="6" class="muted">暂无实时记录</td>`;
+    body.appendChild(row);
+    return;
+  }
+  list.forEach((log) => {
+    const row = document.createElement("tr");
+    const provider = `${log.provider_id || "-"} / ${log.stage || "-"}`;
+    const status =
+      log.error && log.error.length
+        ? `❗ ${escapeHTML(previewText(log.error, 80))}`
+        : "OK";
+    const meta =
+      log.meta_summary && log.meta_summary.length
+        ? `<br/><small>${escapeHTML(previewText(log.meta_summary, 120))}</small>`
+        : "";
+    row.innerHTML = `
+      <td>${formatTs(log.ts)}</td>
+      <td>${escapeHTML(formatSymbols(log.symbols))}</td>
+      <td>${provider}</td>
+      <td>${summarizeDecisions(log.decisions)}</td>
+      <td>${status}${meta}</td>
+      <td>${renderPromptDetails(log)}</td>
+    `;
+    body.appendChild(row);
+  });
+}
+
+function updateLiveOrdersTable(list) {
+  list = Array.isArray(list) ? list : [];
+  const body = document.getElementById("liveOrdersBody");
+  body.innerHTML = "";
+  if (!list.length) {
+    const row = document.createElement("tr");
+    row.innerHTML = `<td colspan="6" class="muted">暂无记录</td>`;
+    body.appendChild(row);
+    return;
+  }
+  list.forEach((order) => {
+    const row = document.createElement("tr");
+    const notes = [];
+    if (typeof order.take_profit === "number" && order.take_profit > 0) {
+      notes.push(`TP ${formatNumber(order.take_profit, 4)}`);
+    }
+    if (typeof order.stop_loss === "number" && order.stop_loss > 0) {
+      notes.push(`SL ${formatNumber(order.stop_loss, 4)}`);
+    }
+    if (order.decision) {
+      notes.push("JSON");
+    }
+    row.innerHTML = `
+      <td>${formatTsValue(order.decided_at)}</td>
+      <td>${order.symbol || "-"}</td>
+      <td>${order.action || "-"}</td>
+      <td>${formatNumber(order.price || 0, 4)}</td>
+      <td>${formatNumber(order.notional || order.quantity || 0, 2)}</td>
+      <td>${notes.join(" · ") || "-"}</td>
     `;
     body.appendChild(row);
   });
@@ -254,6 +343,45 @@ async function refreshRunsList() {
     updateRunsTable(data.runs || []);
   } catch (err) {
     console.error(err);
+  }
+}
+
+async function refreshLiveDecisions() {
+  const msg = document.getElementById("liveLogsMessage");
+  if (msg) setMessage(msg, "加载中…");
+  try {
+    const params = new URLSearchParams();
+    const symbol = document.getElementById("liveSymbol").value.trim();
+    const provider = document.getElementById("liveProvider").value.trim();
+    const stage = document.getElementById("liveStage").value;
+    const limit = document.getElementById("liveLimit").value || "100";
+    if (symbol) params.set("symbol", symbol);
+    if (provider) params.set("provider", provider);
+    if (stage) params.set("stage", stage);
+    if (limit) params.set("limit", limit);
+    const query = params.toString();
+    const data = await safeFetch(`/api/live/decisions${query ? `?${query}` : ""}`);
+    updateLiveLogsTable(data.logs || []);
+    if (msg) setMessage(msg, `已加载 ${data.logs?.length || 0} 条`, "success");
+  } catch (err) {
+    if (msg) setMessage(msg, err.message, "error");
+  }
+}
+
+async function refreshLiveOrders() {
+  const msg = document.getElementById("liveOrdersMessage");
+  if (msg) setMessage(msg, "加载中…");
+  try {
+    const params = new URLSearchParams();
+    const symbol = document.getElementById("liveOrdersSymbol").value.trim();
+    const limit = document.getElementById("liveOrdersLimit").value || "100";
+    if (symbol) params.set("symbol", symbol);
+    if (limit) params.set("limit", limit);
+    const data = await safeFetch(`/api/live/orders${params.size ? `?${params.toString()}` : ""}`);
+    updateLiveOrdersTable(data.orders || []);
+    if (msg) setMessage(msg, `已加载 ${data.orders?.length || 0} 条`, "success");
+  } catch (err) {
+    if (msg) setMessage(msg, err.message, "error");
   }
 }
 
@@ -460,6 +588,28 @@ function init() {
     .getElementById("refreshRunsList")
     .addEventListener("click", refreshRunsList);
 
+  document
+    .getElementById("liveFilterForm")
+    .addEventListener("submit", (e) => {
+      e.preventDefault();
+      refreshLiveDecisions();
+    });
+
+  document
+    .getElementById("refreshLiveLogs")
+    .addEventListener("click", refreshLiveDecisions);
+
+  document
+    .getElementById("liveOrdersForm")
+    .addEventListener("submit", (e) => {
+      e.preventDefault();
+      refreshLiveOrders();
+    });
+
+  document
+    .getElementById("refreshLiveOrders")
+    .addEventListener("click", refreshLiveOrders);
+
   // 默认时间：拉取任务 24h、回测任务 7 天
   const now = new Date();
   const dayAgo = new Date(now.getTime() - 24 * 3600 * 1000);
@@ -472,6 +622,8 @@ function init() {
 
   refreshJobs();
   refreshRunsList();
+  refreshLiveDecisions();
+  refreshLiveOrders();
 }
 
 document.addEventListener("DOMContentLoaded", init);

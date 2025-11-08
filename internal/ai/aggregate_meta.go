@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand"
 	"sort"
 	"strings"
+	"time"
 )
 
 // MetaAggregator：逐币种多数决（留权重，默认相等）。
@@ -14,6 +16,12 @@ import (
 // - 汇总各模型对该 symbol 的票数（支持权重），多数者为最终动作；票数相等则输出 hold
 // - 若任意 symbol 存在分歧，则在结果中填充 MetaSummary 便于外层做 Telegram 推送
 type MetaAggregator struct{ Weights map[string]float64 }
+
+type metaChoice struct {
+	ID       string
+	Decision Decision
+	Weight   float64
+}
 
 func (a MetaAggregator) Name() string { return "meta" }
 
@@ -33,12 +41,8 @@ func pri(action string) int {
 func (a MetaAggregator) Aggregate(ctx context.Context, outputs []ModelOutput) (ModelOutput, error) {
 	// symbol -> action -> weight
 	votes := map[string]map[string]float64{}
-	// symbol -> list of provider choices (for summary)
-	type choice struct {
-		ID, Action, Reason string
-		Weight             float64
-	}
-	details := map[string][]choice{}
+	// symbol -> list of provider choices (带上原始决策，后续用于复用 reasoning/TP/SL 等字段)
+	details := map[string][]metaChoice{}
 
 	// 收集投票
 	for _, o := range outputs {
@@ -71,7 +75,7 @@ func (a MetaAggregator) Aggregate(ctx context.Context, outputs []ModelOutput) (M
 				votes[sym] = map[string]float64{}
 			}
 			votes[sym][d.Action] += w
-			details[sym] = append(details[sym], choice{ID: o.ProviderID, Action: d.Action, Reason: d.Reasoning, Weight: w})
+			details[sym] = append(details[sym], metaChoice{ID: o.ProviderID, Decision: d, Weight: w})
 		}
 	}
 
@@ -82,11 +86,17 @@ func (a MetaAggregator) Aggregate(ctx context.Context, outputs []ModelOutput) (M
 	// 逐 symbol 产出最终决策
 	decisions := make([]Decision, 0, len(votes))
 	anyDisagree := false
+	winners := make(map[string]float64) // provider -> 累积权重（与最终动作一致）
 	for sym, am := range votes {
 		if len(am) == 1 {
 			// 一致
 			for act := range am {
-				decisions = append(decisions, Decision{Symbol: sym, Action: act})
+				decisions = append(decisions, pickDecision(details[sym], act, sym))
+				for _, c := range details[sym] {
+					if c.Decision.Action == act {
+						winners[c.ID] += c.Weight
+					}
+				}
 			}
 			continue
 		}
@@ -103,10 +113,17 @@ func (a MetaAggregator) Aggregate(ctx context.Context, outputs []ModelOutput) (M
 				tie = true
 			}
 		}
+		finalA := bestA
 		if tie {
-			decisions = append(decisions, Decision{Symbol: sym, Action: "hold"})
-		} else {
-			decisions = append(decisions, Decision{Symbol: sym, Action: bestA})
+			finalA = "hold"
+		}
+		decisions = append(decisions, pickDecision(details[sym], finalA, sym))
+		if finalA != "" {
+			for _, c := range details[sym] {
+				if c.Decision.Action == finalA {
+					winners[c.ID] += c.Weight
+				}
+			}
 		}
 	}
 
@@ -125,7 +142,7 @@ func (a MetaAggregator) Aggregate(ctx context.Context, outputs []ModelOutput) (M
 			// 统计该 symbol 的加权票
 			weightByAction := map[string]float64{}
 			for _, c := range details[s] {
-				weightByAction[c.Action] += c.Weight
+				weightByAction[c.Decision.Action] += c.Weight
 			}
 			// 选出最终动作（与上面一致逻辑）
 			finalA := ""
@@ -146,8 +163,9 @@ func (a MetaAggregator) Aggregate(ctx context.Context, outputs []ModelOutput) (M
 			b.WriteString(fmt.Sprintf("%s → %s (权重%.2f)\n", s, finalA, bestW))
 			// 各模型选择与理由（不再截断理由；换行缩进展示）
 			for _, c := range details[s] {
-				b.WriteString(fmt.Sprintf("- %s[%.2f]: %s\n", c.ID, c.Weight, c.Action))
-				reason := strings.TrimSpace(c.Reason)
+				act := c.Decision.Action
+				b.WriteString(fmt.Sprintf("- %s[%.2f]: %s\n", c.ID, c.Weight, act))
+				reason := strings.TrimSpace(c.Decision.Reasoning)
 				if reason != "" {
 					// 规范换行并缩进
 					reason = strings.ReplaceAll(reason, "\r\n", "\n")
@@ -174,6 +192,74 @@ func (a MetaAggregator) Aggregate(ctx context.Context, outputs []ModelOutput) (M
 	if len(outputs) == 1 && outputs[0].Err == nil {
 		best.Raw = outputs[0].Raw
 		best.Parsed.RawJSON = outputs[0].Parsed.RawJSON
+		return best, nil
+	}
+	if id := pickWeightedProvider(winners); id != "" {
+		if out := findProviderOutput(outputs, id); out != nil && out.Err == nil && out.Raw != "" {
+			best.Raw = out.Raw
+			best.Parsed.RawJSON = out.Parsed.RawJSON
+		}
 	}
 	return best, nil
+}
+
+func pickDecision(choices []metaChoice, action, symbol string) Decision {
+	act := NormalizeAction(action)
+	bestIdx := -1
+	bestWeight := -1.0
+	for i, c := range choices {
+		if NormalizeAction(c.Decision.Action) != act {
+			continue
+		}
+		if c.Weight > bestWeight {
+			bestWeight = c.Weight
+			bestIdx = i
+		}
+	}
+	if bestIdx == -1 {
+		return Decision{Symbol: symbol, Action: act}
+	}
+	dup := choices[bestIdx].Decision
+	dup.Symbol = symbol
+	dup.Action = act
+	return dup
+}
+
+func pickWeightedProvider(weights map[string]float64) string {
+	total := 0.0
+	ids := make([]string, 0, len(weights))
+	for id, w := range weights {
+		if w <= 0 {
+			continue
+		}
+		total += w
+		ids = append(ids, id)
+	}
+	if total == 0 || len(ids) == 0 {
+		return ""
+	}
+	sort.Strings(ids)
+	rnd := rand.New(rand.NewSource(time.Now().UnixNano()))
+	target := rnd.Float64() * total
+	acc := 0.0
+	for _, id := range ids {
+		w := weights[id]
+		if w <= 0 {
+			continue
+		}
+		acc += w
+		if target < acc {
+			return id
+		}
+	}
+	return ids[len(ids)-1]
+}
+
+func findProviderOutput(outputs []ModelOutput, id string) *ModelOutput {
+	for i := range outputs {
+		if outputs[i].ProviderID == id {
+			return &outputs[i]
+		}
+	}
+	return nil
 }

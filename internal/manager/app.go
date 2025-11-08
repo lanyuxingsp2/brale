@@ -2,7 +2,9 @@ package manager
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -10,6 +12,7 @@ import (
 	"brale/internal/backtest"
 	"brale/internal/coins"
 	brcfg "brale/internal/config"
+	"brale/internal/execution"
 	"brale/internal/logger"
 	brmarket "brale/internal/market"
 	"brale/internal/notify"
@@ -19,12 +22,17 @@ import (
 
 // App 负责应用级编排：加载配置→资源初始化→WS→AI 决策循环与通知。
 type App struct {
-	cfg     *brcfg.Config
-	ks      *store.MemoryKlineStore
-	updater *brmarket.WSUpdater
-	pm      *prompt.Manager
-	engine  ai.Decider
-	tg      *notify.Telegram
+	cfg                 *brcfg.Config
+	ks                  *store.MemoryKlineStore
+	updater             *brmarket.WSUpdater
+	pm                  *prompt.Manager
+	engine              ai.Decider
+	tg                  *notify.Telegram
+	decLogs             *ai.DecisionLogStore
+	orderRec            execution.Recorder
+	lastDec             *lastDecisionCache
+	includeLastDecision bool
+	lastDecisionTTL     time.Duration
 
 	btStore   *backtest.Store
 	btSvc     *backtest.Service
@@ -32,15 +40,17 @@ type App struct {
 	btSim     *backtest.Simulator
 	btServer  *backtest.HTTPServer
 
-	symbols     []string
-	horizon     brcfg.HorizonProfile
-	hIntervals  []string
-	lookbacks   map[string]int
-	horizonName string
-	hSummary    string
+	symbols       []string
+	horizon       brcfg.HorizonProfile
+	hIntervals    []string
+	lookbacks     map[string]int
+	horizonName   string
+	hSummary      string
+	warmupSummary string
 
 	// 内部运行状态
-	lastOpen map[string]time.Time // 符号+方向 -> 上次开仓时间
+	lastOpen    map[string]time.Time // 符号+方向 -> 上次开仓时间
+	lastRawJSON string               // 上一次决策的原始 JSON
 }
 
 // NewApp 根据配置构建应用对象（不启动）
@@ -99,14 +109,7 @@ func NewApp(cfg *brcfg.Config) (*App, error) {
 	preheater.Warmup(ctx, syms, lookbacks)
 	preheater.Preheat(ctx, syms, hIntervals, cfg.Kline.MaxCached)
 	logger.Infof("✓ Warmup 完成，最小条数=%v", lookbacks)
-	var warmupNotifier *notify.Telegram
-	if cfg.Notify.Telegram.Enabled {
-		warmupNotifier = notify.NewTelegram(cfg.Notify.Telegram.BotToken, cfg.Notify.Telegram.ChatID)
-	}
-	if warmupNotifier != nil {
-		msg := fmt.Sprintf("*Warmup 完成*\n```\n%v\n```", lookbacks)
-		_ = warmupNotifier.SendText(msg)
-	}
+	warmupSummary := fmt.Sprintf("*Warmup 完成*\n```\n%v\n```", lookbacks)
 
 	// 模型 Providers
 	var modelCfgs []ai.ModelCfg
@@ -154,6 +157,44 @@ func NewApp(cfg *brcfg.Config) (*App, error) {
 	var tg *notify.Telegram
 	if cfg.Notify.Telegram.Enabled {
 		tg = notify.NewTelegram(cfg.Notify.Telegram.BotToken, cfg.Notify.Telegram.ChatID)
+	}
+
+	var decisionStore *ai.DecisionLogStore
+	if cfg.AI.DecisionLogPath != "" {
+		var err error
+		decisionStore, err = ai.NewDecisionLogStore(cfg.AI.DecisionLogPath)
+		if err != nil {
+			return nil, fmt.Errorf("初始化决策日志存储失败: %w", err)
+		}
+		if obs := ai.NewDecisionLogObserver(decisionStore); obs != nil {
+			engine.Observer = obs
+		}
+		logPath := cfg.AI.DecisionLogPath
+		if abs, err := filepath.Abs(logPath); err == nil {
+			logPath = abs
+		}
+		logger.Infof("✓ 实盘决策日志写入 %s", logPath)
+	}
+
+	includeLastDecision := cfg.AI.IncludeLastDecision
+	initialLastJSON := ""
+	lastTTL := time.Duration(cfg.AI.LastDecisionMaxAgeSec) * time.Second
+	lastCache := newLastDecisionCache(lastTTL)
+	if !includeLastDecision {
+		lastCache = nil
+	}
+	orderRecorder := execution.Recorder(nil)
+	if decisionStore != nil {
+		orderRecorder = decisionStore
+		if lastCache != nil {
+			records, err := decisionStore.LoadLastDecisions(ctx)
+			if err != nil {
+				logger.Warnf("加载 LastDecision 失败: %v", err)
+			} else {
+				lastCache.Load(records)
+				initialLastJSON = flattenLastDecisionJSON(records)
+			}
+		}
 	}
 
 	var btStore *backtest.Store
@@ -217,6 +258,7 @@ func NewApp(cfg *brcfg.Config) (*App, error) {
 			Svc:       btSvc,
 			Simulator: btSim,
 			Results:   btResults,
+			LiveLogs:  decisionStore,
 		})
 		if err != nil {
 			btResults.Close()
@@ -227,24 +269,31 @@ func NewApp(cfg *brcfg.Config) (*App, error) {
 	}
 
 	return &App{
-		cfg:         cfg,
-		ks:          ks,
-		updater:     updater,
-		pm:          pm,
-		engine:      engine,
-		tg:          tg,
-		symbols:     syms,
-		horizon:     horizon,
-		hIntervals:  append([]string(nil), hIntervals...),
-		lookbacks:   lookbacks,
-		horizonName: cfg.AI.ActiveHorizon,
-		hSummary:    hSummary,
-		lastOpen:    map[string]time.Time{},
-		btStore:     btStore,
-		btSvc:       btSvc,
-		btResults:   btResults,
-		btSim:       btSim,
-		btServer:    btHTTP,
+		cfg:                 cfg,
+		ks:                  ks,
+		updater:             updater,
+		pm:                  pm,
+		engine:              engine,
+		tg:                  tg,
+		decLogs:             decisionStore,
+		orderRec:            orderRecorder,
+		lastDec:             lastCache,
+		includeLastDecision: includeLastDecision,
+		lastDecisionTTL:     lastTTL,
+		symbols:             syms,
+		horizon:             horizon,
+		hIntervals:          append([]string(nil), hIntervals...),
+		lookbacks:           lookbacks,
+		horizonName:         cfg.AI.ActiveHorizon,
+		hSummary:            hSummary,
+		warmupSummary:       warmupSummary,
+		lastOpen:            map[string]time.Time{},
+		lastRawJSON:         initialLastJSON,
+		btStore:             btStore,
+		btSvc:               btSvc,
+		btResults:           btResults,
+		btSim:               btSim,
+		btServer:            btHTTP,
 	}, nil
 }
 
@@ -252,6 +301,9 @@ func NewApp(cfg *brcfg.Config) (*App, error) {
 func (a *App) Run(ctx context.Context) error {
 	if a == nil || a.cfg == nil {
 		return fmt.Errorf("app not initialized")
+	}
+	if a.decLogs != nil {
+		defer a.decLogs.Close()
 	}
 	if a.btStore != nil {
 		defer a.btStore.Close()
@@ -284,6 +336,9 @@ func (a *App) Run(ctx context.Context) error {
 			msg := "*Brale 启动成功* ✅\nWS 已连接并开始订阅"
 			if summary := strings.TrimSpace(a.hSummary); summary != "" {
 				msg = msg + "\n```text\n" + summary + "\n```"
+			}
+			if warmup := strings.TrimSpace(a.warmupSummary); warmup != "" {
+				msg = msg + "\n" + warmup
 			}
 			_ = a.tg.SendText(msg)
 		}
@@ -349,6 +404,13 @@ func (a *App) Run(ctx context.Context) error {
 		case <-decisionTicker.C:
 			// 构建最小上下文并进行决策
 			input := ai.Context{Candidates: a.symbols}
+			if a.includeLastDecision && a.lastDec != nil {
+				snap := a.lastDec.Snapshot(time.Now())
+				if len(snap) > 0 {
+					input.LastDecisions = snap
+					input.LastRawJSON = a.lastRawJSON
+				}
+			}
 			res, err := a.engine.Decide(ctx, input)
 			if err != nil {
 				logger.Warnf("AI 决策失败: %v", err)
@@ -386,6 +448,7 @@ func (a *App) Run(ctx context.Context) error {
 				res.Decisions[i].Action = ai.NormalizeAction(res.Decisions[i].Action)
 			}
 			res.Decisions = ai.OrderAndDedup(res.Decisions)
+			accepted := make([]ai.Decision, 0, len(res.Decisions))
 
 			// 新增：最终聚合决策表（标红）
 			if len(res.Decisions) > 0 {
@@ -421,6 +484,7 @@ func (a *App) Run(ctx context.Context) error {
 						}
 					}
 				}
+				accepted = append(accepted, d)
 
 				// 打印决策
 				a.logDecision(d)
@@ -441,6 +505,7 @@ func (a *App) Run(ctx context.Context) error {
 					}
 					a.lastOpen[key] = time.Now()
 					newOpens++
+					a.recordLiveOrder(ctx, d, entryPrice, validateIv)
 					if a.tg != nil {
 						// 可选的入场价与RR
 						rrVal := 0.0
@@ -514,6 +579,14 @@ func (a *App) Run(ctx context.Context) error {
 					}
 				}
 			}
+			if len(accepted) > 0 {
+				a.persistLastDecisions(ctx, accepted)
+				if raw := strings.TrimSpace(res.RawJSON); raw != "" {
+					a.lastRawJSON = raw
+				} else if buf, err := json.Marshal(accepted); err == nil {
+					a.lastRawJSON = string(buf)
+				}
+			}
 		}
 	}
 }
@@ -536,6 +609,102 @@ func formatHorizonSummary(name string, profile brcfg.HorizonProfile, intervals [
 		fmt.Sprintf("- RSI(period=%d, oversold=%.0f, overbought=%.0f)", ind.RSI.Period, ind.RSI.Oversold, ind.RSI.Overbought),
 	}
 	return strings.Join(lines, "\n")
+}
+
+func flattenLastDecisionJSON(records []ai.LastDecisionRecord) string {
+	if len(records) == 0 {
+		return ""
+	}
+	total := 0
+	for _, rec := range records {
+		total += len(rec.Decisions)
+	}
+	if total == 0 {
+		return ""
+	}
+	all := make([]ai.Decision, 0, total)
+	for _, rec := range records {
+		if len(rec.Decisions) == 0 {
+			continue
+		}
+		all = append(all, rec.Decisions...)
+	}
+	buf, err := json.Marshal(all)
+	if err != nil {
+		return ""
+	}
+	return string(buf)
+}
+
+func (a *App) recordLiveOrder(ctx context.Context, d ai.Decision, entryPrice float64, timeframe string) {
+	if a.orderRec == nil {
+		return
+	}
+	symbol := strings.ToUpper(strings.TrimSpace(d.Symbol))
+	if symbol == "" {
+		return
+	}
+	payload := execution.Order{
+		Symbol:     symbol,
+		Action:     d.Action,
+		Side:       deriveSide(d.Action),
+		Type:       "signal",
+		Price:      entryPrice,
+		Quantity:   0,
+		Notional:   d.PositionSizeUSD,
+		Fee:        0,
+		Timeframe:  timeframe,
+		DecidedAt:  time.Now(),
+		TakeProfit: d.TakeProfit,
+		StopLoss:   d.StopLoss,
+		ExpectedRR: 0,
+	}
+	if data, err := json.Marshal(d); err == nil {
+		payload.Decision = data
+	}
+	if _, err := a.orderRec.RecordOrder(ctx, &payload); err != nil {
+		logger.Warnf("记录 live order 失败: %v", err)
+	}
+}
+
+func deriveSide(action string) string {
+	switch action {
+	case "open_long", "close_long", "adjust_stop_loss":
+		return "long"
+	case "open_short", "close_short", "partial_close_short":
+		return "short"
+	default:
+		return ""
+	}
+}
+
+func (a *App) persistLastDecisions(ctx context.Context, decisions []ai.Decision) {
+	if !a.includeLastDecision || len(decisions) == 0 || a.lastDec == nil || a.decLogs == nil {
+		return
+	}
+	now := time.Now()
+	for _, d := range decisions {
+		symbol := strings.ToUpper(strings.TrimSpace(d.Symbol))
+		if symbol == "" {
+			continue
+		}
+		mem := ai.DecisionMemory{
+			Symbol:    symbol,
+			Horizon:   a.horizonName,
+			DecidedAt: now,
+			Decisions: []ai.Decision{d},
+		}
+		a.lastDec.Set(mem)
+		rec := ai.LastDecisionRecord{
+			Symbol:    symbol,
+			Horizon:   a.horizonName,
+			DecidedAt: now,
+			Decisions: []ai.Decision{d},
+		}
+		if err := a.decLogs.SaveLastDecision(ctx, rec); err != nil {
+			logger.Warnf("保存 LastDecision 失败: %v", err)
+		}
+	}
 }
 
 func (a *App) logDecision(d ai.Decision) {

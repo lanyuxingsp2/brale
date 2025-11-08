@@ -220,10 +220,98 @@
         </div>
       </div>
     </section>
+
+    <section class="full-width">
+      <div class="section-head">
+        <h2>实时 AI 日志</h2>
+        <button id="refreshLiveLogs" type="button">刷新</button>
+      </div>
+      <form id="liveFilterForm">
+        <div class="filter-grid">
+          <div class="field">
+            <label>交易对</label>
+            <input type="text" id="liveSymbol" placeholder="如 BTCUSDT" />
+          </div>
+          <div class="field">
+            <label>Provider</label>
+            <input type="text" id="liveProvider" placeholder="模型 ID" />
+          </div>
+          <div class="field">
+            <label>阶段</label>
+            <select id="liveStage">
+              <option value="">全部</option>
+              <option value="provider">provider</option>
+              <option value="final">final</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>条数</label>
+            <input type="number" id="liveLimit" min="10" max="500" value="100" />
+          </div>
+        </div>
+        <button type="submit">应用筛选</button>
+      </form>
+      <div id="liveLogsMessage" class="message"></div>
+      <div class="table-wrapper">
+        <table>
+          <thead>
+            <tr>
+              <th>时间</th>
+              <th>Symbols</th>
+              <th>Provider/阶段</th>
+              <th>决策</th>
+              <th>状态</th>
+              <th>提示词</th>
+            </tr>
+          </thead>
+          <tbody id="liveLogsBody">
+            <tr><td colspan="6" class="muted">暂无实时记录</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="full-width">
+      <div class="section-head">
+        <h2>实时信号订单</h2>
+        <button id="refreshLiveOrders" type="button">刷新</button>
+      </div>
+      <form id="liveOrdersForm">
+        <div class="filter-grid">
+          <div class="field">
+            <label>交易对</label>
+            <input type="text" id="liveOrdersSymbol" placeholder="如 BTCUSDT" />
+          </div>
+          <div class="field">
+            <label>条数</label>
+            <input type="number" id="liveOrdersLimit" min="10" max="500" value="100" />
+          </div>
+        </div>
+        <button type="submit">应用筛选</button>
+      </form>
+      <div id="liveOrdersMessage" class="message"></div>
+      <div class="table-wrapper">
+        <table>
+          <thead>
+            <tr>
+              <th>时间</th>
+              <th>交易对</th>
+              <th>动作</th>
+              <th>价格</th>
+              <th>规模 (USDT)</th>
+              <th>备注</th>
+            </tr>
+          </thead>
+          <tbody id="liveOrdersBody">
+            <tr><td colspan="6" class="muted">暂无记录</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
   </main>
 
   <footer>
-    <small>回测服务端口：9991 · API 前缀 /api/backtest</small>
+    <small>服务端口 9991 · API：/api/backtest · /api/live</small>
   </footer>
 
   <script src="/static/app.js" defer></script>

@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"time"
 
+	"brale/internal/ai"
 	"brale/internal/backtest/ui"
 
 	"github.com/gin-gonic/gin"
@@ -19,6 +20,7 @@ type HTTPServer struct {
 	svc       *Service
 	sim       *Simulator
 	results   *ResultStore
+	liveLogs  *ai.DecisionLogStore
 	router    *gin.Engine
 	indexHTML []byte
 }
@@ -28,6 +30,7 @@ type HTTPConfig struct {
 	Svc       *Service
 	Simulator *Simulator
 	Results   *ResultStore
+	LiveLogs  *ai.DecisionLogStore
 }
 
 func NewHTTPServer(cfg HTTPConfig) (*HTTPServer, error) {
@@ -56,6 +59,7 @@ func NewHTTPServer(cfg HTTPConfig) (*HTTPServer, error) {
 		svc:       cfg.Svc,
 		sim:       cfg.Simulator,
 		results:   cfg.Results,
+		liveLogs:  cfg.LiveLogs,
 		router:    router,
 		indexHTML: indexHTML,
 	}
@@ -79,6 +83,10 @@ func (s *HTTPServer) registerRoutes() {
 	api.GET("/runs/:id/positions", s.handleRunPositions)
 	api.GET("/runs/:id/snapshots", s.handleRunSnapshots)
 	api.GET("/runs/:id/logs", s.handleRunLogs)
+
+	live := s.router.Group("/api/live")
+	live.GET("/decisions", s.handleLiveDecisions)
+	live.GET("/orders", s.handleLiveOrders)
 }
 
 func (s *HTTPServer) handleIndex(c *gin.Context) {
@@ -277,6 +285,41 @@ func (s *HTTPServer) handleRunLogs(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"logs": logs})
+}
+
+func (s *HTTPServer) handleLiveDecisions(c *gin.Context) {
+	if s.liveLogs == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "实时日志未启用"})
+		return
+	}
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "100"))
+	query := ai.LiveDecisionQuery{
+		Limit:    limit,
+		Provider: c.Query("provider"),
+		Stage:    c.Query("stage"),
+		Symbol:   c.Query("symbol"),
+	}
+	logs, err := s.liveLogs.ListDecisions(c.Request.Context(), query)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"logs": logs})
+}
+
+func (s *HTTPServer) handleLiveOrders(c *gin.Context) {
+	if s.liveLogs == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "实时日志未启用"})
+		return
+	}
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "100"))
+	symbol := c.Query("symbol")
+	orders, err := s.liveLogs.ListOrders(c.Request.Context(), symbol, limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"orders": orders})
 }
 
 // Start 启动 HTTP 服务，阻塞直到 ctx 取消或出现错误。

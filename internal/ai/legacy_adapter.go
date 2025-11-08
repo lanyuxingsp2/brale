@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -62,6 +63,10 @@ type DecisionTrace struct {
 	UserPrompt   string
 	Outputs      []ModelOutput
 	Best         ModelOutput
+	Candidates   []string
+	Timeframes   []string
+	HorizonName  string
+	Positions    []PositionSnapshot
 }
 
 func (e *LegacyEngineAdapter) Name() string {
@@ -200,6 +205,10 @@ func (e *LegacyEngineAdapter) Decide(ctx context.Context, input Context) (Decisi
 			UserPrompt:   usr,
 			Outputs:      cloneOutputs(outs),
 			Best:         best,
+			Candidates:   cloneStrings(input.Candidates),
+			Timeframes:   cloneStrings(e.Intervals),
+			HorizonName:  e.HorizonName,
+			Positions:    cloneSnapshots(input.Positions),
 		})
 	}
 	return result, nil
@@ -254,6 +263,46 @@ func (e *LegacyEngineAdapter) buildUserSummary(ctx context.Context, input Contex
 		rsiCfg.Oversold = 30
 		rsiCfg.Overbought = 70
 	}
+	if len(input.LastDecisions) > 0 {
+		b.WriteString("\n## 上次 AI 决策概览\n")
+		mem := append([]DecisionMemory(nil), input.LastDecisions...)
+		sort.Slice(mem, func(i, j int) bool {
+			if strings.EqualFold(mem[i].Symbol, mem[j].Symbol) {
+				return mem[i].DecidedAt.After(mem[j].DecidedAt)
+			}
+			return mem[i].Symbol < mem[j].Symbol
+		})
+		var fullPrev []Decision
+		for _, m := range mem {
+			age := time.Since(m.DecidedAt).Round(time.Minute)
+			if age < 0 {
+				age = 0
+			}
+			b.WriteString(fmt.Sprintf("- %s (%s 前)\n", strings.ToUpper(m.Symbol), age))
+			for _, d := range m.Decisions {
+				reason := strings.TrimSpace(d.Reasoning)
+				if len(reason) > 120 {
+					reason = reason[:120] + "…"
+				}
+				b.WriteString(fmt.Sprintf("    • %s size=%.0f tp=%.4f sl=%.4f %s\n",
+					strings.ToLower(d.Action), d.PositionSizeUSD, d.TakeProfit, d.StopLoss, reason))
+			}
+			fullPrev = append(fullPrev, m.Decisions...)
+		}
+		if raw := strings.TrimSpace(input.LastRawJSON); raw != "" {
+			b.WriteString("\n```json\n")
+			b.WriteString(PrettyJSON(raw))
+			b.WriteString("\n```\n")
+		} else if len(fullPrev) > 0 {
+			if rawJSON, err := json.MarshalIndent(fullPrev, "", "  "); err == nil {
+				b.WriteString("\n```json\n")
+				b.Write(rawJSON)
+				b.WriteString("\n```\n")
+			}
+		}
+		b.WriteString("请结合上一轮思路评估是否需要延续/调整。\n")
+	}
+
 	group := map[string]string{}
 	for _, tf := range profile.EntryTimeframes {
 		group[tf] = "entry"
@@ -380,7 +429,7 @@ func (e *LegacyEngineAdapter) buildUserSummary(ctx context.Context, input Contex
 	}
 
 	b.WriteString("\n请先输出一段简短的【思维链】（最多3句，说明判断依据与步骤），然后换行仅输出 JSON 数组作为最终结果；数组中每项必须包含 symbol、action，并附带简短的 reasoning 字段。仅当已有对应方向仓位且需要部分减仓/止盈时，才在 JSON 中提供 close_ratio（0-1，表示释放仓位比例）或 position_size_usd；无仓位时不要返回 close_ratio。当 action 为 open_long/open_short 时，务必返回 take_profit 与 stop_loss 字段（使用绝对价格，浮点数）。当 action 为 adjust_stop_loss 时，必须返回新的 stop_loss 价格，否则视为无效。\n")
-	b.WriteString("示例:\n思维链: 4h 供需区不明确，15m 未出现有效形态，MACD 未确认。\n[ {\"symbol\":\"BTCUSDT\",\"action\":\"hold\",\"reasoning\":\"未满足三步确认，暂不入场\"} ]\n")
+	b.WriteString("示例:\n思维链: 4h 供需区不明确，15m 未出现有效形态，MACD 未确认，bull_score 与 bear_score分数均不满足。\n[ {\"symbol\":\"BTCUSDT\",\"action\":\"hold\",\"reasoning\":\"bull_score 与 bear_score分数均不满足\"} ]\n")
 	return b.String()
 }
 

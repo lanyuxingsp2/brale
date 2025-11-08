@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	toml "github.com/pelletier/go-toml/v2"
@@ -40,6 +41,9 @@ type Config struct {
 		LogEachModel            bool                      `toml:"log_each_model"`
 		Weights                 map[string]float64        `toml:"weights"`
 		DecisionIntervalSeconds int                       `toml:"decision_interval_seconds"`
+		DecisionLogPath         string                    `toml:"decision_log_path"`
+		IncludeLastDecision     bool                      `toml:"include_last_decision"`
+		LastDecisionMaxAgeSec   int                       `toml:"last_decision_max_age_seconds"`
 		ActiveHorizon           string                    `toml:"active_horizon"`
 		HoldingProfiles         map[string]HorizonProfile `toml:"holding_horizon_profiles"`
 		// 模型配置：完全通过配置文件提供，不再使用环境变量
@@ -311,6 +315,15 @@ func applyDefaults(c *Config) {
 	}
 	if len(c.WS.Periods) == 0 {
 		c.WS.Periods = append([]string(nil), derivedIntervals...)
+	}
+	if c.AI.DecisionLogPath == "" {
+		c.AI.DecisionLogPath = filepath.Join("data", "live", "decisions.db")
+	}
+	if c.AI.LastDecisionMaxAgeSec <= 0 {
+		c.AI.LastDecisionMaxAgeSec = 3600
+	}
+	if !c.AI.IncludeLastDecision {
+		c.AI.IncludeLastDecision = true
 	}
 
 	if c.Backtest.DataDir == "" {
