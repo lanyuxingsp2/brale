@@ -246,6 +246,17 @@ func (e *LegacyEngineAdapter) buildUserSummary(ctx context.Context, input Contex
 		rsiCfg.Oversold = 30
 		rsiCfg.Overbought = 70
 	}
+
+	// 确定成交量回看周期，并加入保护
+	lookbackPeriod := rsiCfg.Period
+	const maxLookback = 50 // 硬性上限保护
+	if lookbackPeriod <= 0 {
+		lookbackPeriod = 14 // 无效周期保护
+	}
+	if lookbackPeriod > maxLookback {
+		lookbackPeriod = maxLookback // 上限保护
+	}
+
 	if len(input.LastDecisions) > 0 {
 		b.WriteString("\n## 上次 AI 决策概览\n")
 		mem := append([]DecisionMemory(nil), input.LastDecisions...)
@@ -324,11 +335,24 @@ func (e *LegacyEngineAdapter) buildUserSummary(ctx context.Context, input Contex
 			if len(ks) == 0 {
 				continue
 			}
+
+			// 提取OHLC和成交量序列
+			lastCandle := ks[len(ks)-1]
 			closes := make([]float64, 0, len(ks))
 			for _, k := range ks {
 				closes = append(closes, k.Close)
 			}
-			last := ks[len(ks)-1]
+
+			actualLookback := lookbackPeriod
+			if len(ks) < lookbackPeriod {
+				actualLookback = len(ks) // 数据不足时，取实际长度
+			}
+			volumeSlice := make([]float64, actualLookback)
+			for i := 0; i < actualLookback; i++ {
+				volumeSlice[i] = ks[len(ks)-actualLookback+i].Volume
+			}
+			volumeStr := formatVolumeSlice(volumeSlice)
+
 			emaFast := strategy.EMA(closes, emaCfg.Fast)
 			emaMid := strategy.EMA(closes, emaCfg.Mid)
 			emaSlow := strategy.EMA(closes, emaCfg.Slow)
@@ -356,7 +380,7 @@ func (e *LegacyEngineAdapter) buildUserSummary(ctx context.Context, input Contex
 			}
 			trend := ""
 			if trendRef != 0 {
-				if last.Close >= trendRef {
+				if lastCandle.Close >= trendRef {
 					trend = fmt.Sprintf(" | 趋势: 收盘在%s上方", refName)
 				} else {
 					trend = fmt.Sprintf(" | 趋势: 收盘在%s下方", refName)
@@ -369,8 +393,12 @@ func (e *LegacyEngineAdapter) buildUserSummary(ctx context.Context, input Contex
 			if !first {
 				b.WriteString(" || ")
 			}
-			b.WriteString(fmt.Sprintf("%s%s 收盘=%.4f | EMA(%d/%d/%d)=%.3f/%.3f/%.3f%s | RSI%d=%.2f(%s, 阈=%.0f/%.0f) | MACD=%.3f",
-				iv, tag, last.Close, emaCfg.Fast, emaCfg.Mid, emaCfg.Slow, emaFast, emaMid, emaSlow, trend, rsiCfg.Period, rsi, rsiState, rsiCfg.Oversold, rsiCfg.Overbought, macd))
+			b.WriteString(fmt.Sprintf("%s%s O=%.4f H=%.4f L=%.4f C=%.4f | EMA(%d/%d/%d)=%.3f/%.3f/%.3f%s | RSI%d=%.2f(%s, 阈=%.0f/%.0f) | MACD=%.3f | Vol(%d)=%s",
+				iv, tag, lastCandle.Open, lastCandle.High, lastCandle.Low, lastCandle.Close,
+				emaCfg.Fast, emaCfg.Mid, emaCfg.Slow, emaFast, emaMid, emaSlow, trend,
+				rsiCfg.Period, rsi, rsiState, rsiCfg.Oversold, rsiCfg.Overbought,
+				macd,
+				len(volumeSlice), volumeStr))
 			first = false
 		}
 		if first {
@@ -441,4 +469,16 @@ func cloneStrings(src []string) []string {
 	dst := make([]string, len(src))
 	copy(dst, src)
 	return dst
+}
+
+// formatVolumeSlice 将成交量切片格式化为紧凑的字符串，例如 "[123, 456, 789]"
+func formatVolumeSlice(volumes []float64) string {
+	if len(volumes) == 0 {
+		return "[]"
+	}
+	parts := make([]string, len(volumes))
+	for i, v := range volumes {
+		parts[i] = fmt.Sprintf("%.0f", v)
+	}
+	return "[" + strings.Join(parts, ", ") + "]"
 }
