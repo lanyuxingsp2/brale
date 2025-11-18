@@ -9,10 +9,10 @@ import (
 	"time"
 
 	"brale/internal/analysis/visual"
-	"brale/internal/backtest"
 	"brale/internal/coins"
 	brcfg "brale/internal/config"
 	"brale/internal/decision"
+	freqexec "brale/internal/executor/freqtrade"
 	"brale/internal/gateway"
 	"brale/internal/gateway/database"
 	"brale/internal/gateway/notifier"
@@ -22,14 +22,14 @@ import (
 	brmarket "brale/internal/market"
 	"brale/internal/store"
 	"brale/internal/strategy"
-	backtesthttp "brale/internal/transport/http/backtest"
+	livehttp "brale/internal/transport/http/live"
 )
 
 // App 负责应用级编排：加载配置→初始化依赖→启动实时与回测服务。
 type App struct {
 	cfg      *brcfg.Config
 	live     *LiveService
-	backtest *BacktestService
+	liveHTTP *livehttp.Server
 }
 
 // NewApp 根据配置构建应用对象（不启动）
@@ -203,6 +203,16 @@ func NewApp(cfg *brcfg.Config) (*App, error) {
 		}
 	}
 
+	var freqManager *freqexec.Manager
+	if cfg.Freqtrade.Enabled {
+		client, err := freqexec.NewClient(cfg.Freqtrade)
+		if err != nil {
+			return nil, fmt.Errorf("初始化 freqtrade 执行器失败: %w", err)
+		}
+		logger.Infof("✓ Freqtrade 执行器已启用: %s", cfg.Freqtrade.APIURL)
+		freqManager = freqexec.NewManager(client, cfg.Freqtrade, cfg.AI.ActiveHorizon, decisionStore, orderRecorder)
+	}
+
 	liveSvc := &LiveService{
 		cfg:                 cfg,
 		ks:                  ks,
@@ -221,87 +231,31 @@ func NewApp(cfg *brcfg.Config) (*App, error) {
 		warmupSummary:       warmupSummary,
 		lastOpen:            map[string]time.Time{},
 		lastRawJSON:         initialLastJSON,
+		freqManager:         freqManager,
 	}
 
-	var backtestSvc *BacktestService
-	if cfg.Backtest.Enabled {
+	var liveHTTPServe *livehttp.Server
+	var freqHandler livehttp.FreqtradeWebhookHandler
+	if freqManager != nil {
+		freqHandler = liveSvc
+	}
+	if decisionStore != nil || freqManager != nil {
 		var err error
-		btStore, err := backtest.NewStore(cfg.Backtest.DataDir)
-		if err != nil {
-			return nil, fmt.Errorf("初始化回测存储失败: %w", err)
-		}
-		btResults, err := backtest.NewResultStore(cfg.Backtest.DataDir)
-		if err != nil {
-			btStore.Close()
-			return nil, fmt.Errorf("初始化回测结果库失败: %w", err)
-		}
-		sources := map[string]backtest.CandleSource{
-			"binance": backtest.NewBinanceSource(""),
-		}
-		btSvc, err := backtest.NewService(backtest.ServiceConfig{
-			Store:           btStore,
-			Sources:         sources,
-			DefaultExchange: cfg.Backtest.DefaultExchange,
-			RateLimitPerMin: cfg.Backtest.RateLimitPerMin,
-			MaxBatch:        cfg.Backtest.MaxBatch,
-			MaxConcurrent:   cfg.Backtest.MaxConcurrent,
+		liveHTTPServe, err = livehttp.NewServer(livehttp.ServerConfig{
+			Addr:             cfg.App.HTTPAddr,
+			Logs:             decisionStore,
+			FreqtradeHandler: freqHandler,
 		})
 		if err != nil {
-			btResults.Close()
-			btStore.Close()
-			return nil, fmt.Errorf("初始化回测服务失败: %w", err)
+			return nil, fmt.Errorf("初始化 live HTTP 失败: %w", err)
 		}
-		simFactory := &backtest.AIProxyFactory{
-			Prompt:         pm,
-			SystemTemplate: cfg.Prompt.SystemTemplate,
-			Models:         modelCfgs,
-			Aggregator:     aggregator,
-			Parallel:       true,
-			TimeoutSeconds: cfg.MCP.TimeoutSeconds,
-			MultiAgent:     cfg.AI.MultiAgent,
-		}
-		btSim, err := backtest.NewSimulator(backtest.SimulatorConfig{
-			CandleStore:    btStore,
-			ResultStore:    btResults,
-			Fetcher:        btSvc,
-			Profiles:       cfg.AI.HoldingProfiles,
-			Lookbacks:      lookbacks,
-			DefaultProfile: cfg.AI.ActiveHorizon,
-			Strategy:       simFactory,
-			Notifier:       tg,
-			MaxConcurrent:  cfg.Backtest.MaxConcurrent,
-		})
-		if err != nil {
-			btResults.Close()
-			btStore.Close()
-			return nil, fmt.Errorf("初始化回测模拟器失败: %w", err)
-		}
-		btHTTP, err := backtesthttp.NewServer(backtesthttp.Config{
-			Addr:      cfg.Backtest.HTTPAddr,
-			Svc:       btSvc,
-			Simulator: btSim,
-			Results:   btResults,
-			LiveLogs:  decisionStore,
-		})
-		if err != nil {
-			btResults.Close()
-			btStore.Close()
-			return nil, fmt.Errorf("初始化回测 HTTP 失败: %w", err)
-		}
-		logger.Infof("✓ 回测 HTTP 接口监听 %s", cfg.Backtest.HTTPAddr)
-		backtestSvc = &BacktestService{
-			store:   btStore,
-			results: btResults,
-			svc:     btSvc,
-			sim:     btSim,
-			server:  btHTTP,
-		}
+		logger.Infof("✓ Live HTTP 接口监听 %s", liveHTTPServe.Addr())
 	}
 
 	return &App{
 		cfg:      cfg,
 		live:     liveSvc,
-		backtest: backtestSvc,
+		liveHTTP: liveHTTPServe,
 	}, nil
 }
 
@@ -310,9 +264,12 @@ func (a *App) Run(ctx context.Context) error {
 	if a == nil || a.cfg == nil {
 		return fmt.Errorf("app not initialized")
 	}
-	if a.backtest != nil {
-		a.backtest.Start(ctx)
-		defer a.backtest.Close()
+	if a.liveHTTP != nil {
+		go func() {
+			if err := a.liveHTTP.Start(ctx); err != nil {
+				logger.Warnf("Live HTTP 停止: %v", err)
+			}
+		}()
 	}
 	if a.live == nil {
 		return fmt.Errorf("live service not initialized")

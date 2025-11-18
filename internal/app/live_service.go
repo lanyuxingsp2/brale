@@ -9,6 +9,7 @@ import (
 
 	brcfg "brale/internal/config"
 	"brale/internal/decision"
+	freqexec "brale/internal/executor/freqtrade"
 	"brale/internal/gateway/database"
 	"brale/internal/gateway/notifier"
 	"brale/internal/logger"
@@ -38,6 +39,8 @@ type LiveService struct {
 
 	lastOpen    map[string]time.Time
 	lastRawJSON string
+
+	freqManager *freqexec.Manager
 }
 
 // Run 启动实时服务，直到 ctx 取消。
@@ -168,7 +171,7 @@ func (s *LiveService) tickDecision(ctx context.Context) error {
 			Indicators:  s.profile.Indicators,
 		})
 	}
-	if snaps := s.loadLivePositionSnapshots(ctx); len(snaps) > 0 {
+	if snaps := s.livePositions(); len(snaps) > 0 {
 		input.Positions = snaps
 	}
 	if s.includeLastDecision && s.lastDec != nil {
@@ -182,6 +185,7 @@ func (s *LiveService) tickDecision(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	traceID := s.ensureTraceID(res.TraceID)
 	if len(res.Decisions) == 0 {
 		logger.Infof("AI 决策为空（观望）")
 		return nil
@@ -240,9 +244,14 @@ func (s *LiveService) tickDecision(ctx context.Context) error {
 				}
 			}
 		}
+		if s.freqManager != nil {
+			if err := s.freqtradeHandleDecision(ctx, traceID, d); err != nil {
+				logger.Warnf("freqtrade 执行失败，跳过: %v | %+v", err, d)
+				continue
+			}
+		}
 		accepted = append(accepted, d)
 		s.logDecision(d)
-		s.updateLivePositions(ctx, d, marketPrice)
 
 		if d.Action == "open_long" || d.Action == "open_short" {
 			if newOpens >= cfg.Advanced.MaxOpensPerCycle {
@@ -426,92 +435,11 @@ func (s *LiveService) persistLastDecisions(ctx context.Context, decisions []deci
 	}
 }
 
-func (s *LiveService) loadLivePositionSnapshots(ctx context.Context) []decision.PositionSnapshot {
-	if s.decLogs == nil {
-		return nil
+func (s *LiveService) livePositions() []decision.PositionSnapshot {
+	if s.freqManager != nil {
+		return s.freqManager.Positions()
 	}
-	positions, err := s.decLogs.ListOpenPositions(ctx)
-	if err != nil {
-		logger.Warnf("加载当前持仓失败: %v", err)
-		return nil
-	}
-	now := time.Now()
-	out := make([]decision.PositionSnapshot, 0, len(positions))
-	for _, p := range positions {
-		qty := p.Notional
-		if qty == 0 {
-			qty = p.Quantity
-		}
-		holding := int64(0)
-		if p.OpenedAt > 0 {
-			holding = now.Sub(time.UnixMilli(p.OpenedAt)).Milliseconds()
-		}
-		out = append(out, decision.PositionSnapshot{
-			Symbol:     strings.ToUpper(p.Symbol),
-			Side:       p.Side,
-			EntryPrice: p.Entry,
-			Quantity:   qty,
-			TakeProfit: p.TakeProfit,
-			StopLoss:   p.StopLoss,
-			HoldingMs:  holding,
-		})
-	}
-	return out
-}
-
-func (s *LiveService) updateLivePositions(ctx context.Context, d decision.Decision, marketPrice float64) {
-	if s.decLogs == nil {
-		return
-	}
-	symbol := strings.ToUpper(strings.TrimSpace(d.Symbol))
-	if symbol == "" {
-		return
-	}
-	switch d.Action {
-	case "open_long", "open_short":
-		side := deriveSide(d.Action)
-		pos := database.LivePosition{
-			Symbol:     symbol,
-			Side:       side,
-			Entry:      marketPrice,
-			Notional:   d.PositionSizeUSD,
-			Leverage:   float64(d.Leverage),
-			TakeProfit: d.TakeProfit,
-			StopLoss:   d.StopLoss,
-		}
-		if err := s.decLogs.UpsertLivePosition(ctx, pos); err != nil {
-			logger.Warnf("记录持仓失败(open): %v", err)
-		}
-	case "close_long", "close_short":
-		side := deriveSide(d.Action)
-		ratio := clampCloseRatio(d.CloseRatio)
-		if ratio > 0 && ratio < 1 {
-			if err := s.decLogs.ReduceLivePosition(ctx, symbol, side, ratio); err != nil {
-				logger.Warnf("部分减仓失败: %v", err)
-			}
-		} else {
-			if err := s.decLogs.CloseLivePosition(ctx, symbol, side, marketPrice); err != nil {
-				logger.Warnf("关闭持仓失败: %v", err)
-			}
-		}
-	case "adjust_stop_loss":
-		updated, err := s.decLogs.UpdateLivePositionStops(ctx, symbol, "", d.StopLoss, d.TakeProfit)
-		if err != nil {
-			logger.Warnf("更新止盈止损失败: %v", err)
-		} else if !updated {
-			logger.Debugf("未找到待调整的持仓: %s", symbol)
-		}
-	}
-}
-
-func clampCloseRatio(ratio float64) float64 {
-	if ratio < 0 {
-		return 0
-	}
-	if ratio > 1 {
-		return 1
-	}
-	return ratio
+	return nil
 }
 
 func (s *LiveService) logDecision(d decision.Decision) {
@@ -613,4 +541,39 @@ func deriveSide(action string) string {
 	default:
 		return ""
 	}
+}
+
+func (s *LiveService) freqtradeHandleDecision(ctx context.Context, traceID string, d decision.Decision) error {
+	if s.freqManager == nil {
+		return nil
+	}
+	return s.freqManager.Execute(ctx, freqexec.DecisionInput{
+		TraceID:  traceID,
+		Decision: d,
+	})
+}
+
+// HandleFreqtradeWebhook implements livehttp.FreqtradeWebhookHandler.
+func (s *LiveService) HandleFreqtradeWebhook(ctx context.Context, msg freqexec.WebhookMessage) error {
+	if s == nil || s.freqManager == nil {
+		return fmt.Errorf("live service 未初始化")
+	}
+	s.freqManager.HandleWebhook(ctx, msg)
+	return nil
+}
+
+// ListFreqtradePositions implements livehttp.FreqtradeWebhookHandler.
+func (s *LiveService) ListFreqtradePositions(ctx context.Context, symbol string, limit int) []freqexec.APIPosition {
+	if s == nil || s.freqManager == nil {
+		return nil
+	}
+	return s.freqManager.PositionsForAPI(symbol, limit)
+}
+
+func (s *LiveService) ensureTraceID(raw string) string {
+	id := strings.TrimSpace(raw)
+	if id != "" {
+		return id
+	}
+	return fmt.Sprintf("trace-%d", time.Now().UnixNano())
 }

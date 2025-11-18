@@ -15,6 +15,7 @@ type Config struct {
 	App struct {
 		Env      string `toml:"env"`
 		LogLevel string `toml:"log_level"`
+		HTTPAddr string `toml:"http_addr"`
 	} `toml:"app"`
 
 	Symbols struct {
@@ -40,16 +41,6 @@ type Config struct {
 		SystemTemplate string `toml:"system_template"`
 	} `toml:"prompt"`
 
-	Backtest struct {
-		Enabled         bool   `toml:"enabled"`
-		DataDir         string `toml:"data_dir"`
-		HTTPAddr        string `toml:"http_addr"`
-		DefaultExchange string `toml:"default_exchange"`
-		RateLimitPerMin int    `toml:"rate_limit_per_min"`
-		MaxBatch        int    `toml:"max_batch"`
-		MaxConcurrent   int    `toml:"max_concurrent"`
-	} `toml:"backtest"`
-
 	Notify struct {
 		Telegram struct {
 			Enabled  bool   `toml:"enabled"`
@@ -57,6 +48,8 @@ type Config struct {
 			ChatID   string `toml:"chat_id"`
 		} `toml:"telegram"`
 	} `toml:"notify"`
+
+	Freqtrade FreqtradeConfig `toml:"freqtrade"`
 
 	Advanced struct {
 		LiquidityFilterUSDM int     `toml:"liquidity_filter_usd_m"`
@@ -75,6 +68,20 @@ type TradingConfig struct {
 	MaxPositionPct     float64 `toml:"max_position_pct"`     // 单笔最大占用比例 0~1
 	DefaultPositionUSD float64 `toml:"default_position_usd"` // 若>0，直接作为 fallback 仓位
 	DefaultLeverage    int     `toml:"default_leverage"`     // 缺省杠杆
+}
+
+// FreqtradeConfig 描述外部执行引擎的访问方式。
+type FreqtradeConfig struct {
+	Enabled            bool    `toml:"enabled"`
+	APIURL             string  `toml:"api_url"`
+	Username           string  `toml:"username"`
+	Password           string  `toml:"password"`
+	APIToken           string  `toml:"api_token"`
+	DefaultStakeUSD    float64 `toml:"default_stake_usd"`
+	DefaultLeverage    int     `toml:"default_leverage"`
+	TimeoutSeconds     int     `toml:"timeout_seconds"`
+	InsecureSkipVerify bool    `toml:"insecure_skip_verify"`
+	WebhookURL         string  `toml:"webhook_url"`
 }
 
 // AIConfig 包含与模型、持仓周期相关的所有设置。
@@ -616,6 +623,9 @@ func applyDefaults(c *Config) {
 	if c.Prompt.SystemTemplate == "" {
 		c.Prompt.SystemTemplate = "default"
 	}
+	if strings.TrimSpace(c.App.HTTPAddr) == "" {
+		c.App.HTTPAddr = ":9991"
+	}
 	if c.AI.ProviderPresets == nil {
 		c.AI.ProviderPresets = make(map[string]ModelPreset)
 	}
@@ -706,24 +716,6 @@ func applyDefaults(c *Config) {
 	}
 	c.AI.MultiAgent.applyDefaults()
 
-	if c.Backtest.DataDir == "" {
-		c.Backtest.DataDir = "data/backtest"
-	}
-	if c.Backtest.HTTPAddr == "" {
-		c.Backtest.HTTPAddr = ":9991"
-	}
-	if c.Backtest.DefaultExchange == "" {
-		c.Backtest.DefaultExchange = "binance"
-	}
-	if c.Backtest.RateLimitPerMin <= 0 {
-		c.Backtest.RateLimitPerMin = 600
-	}
-	if c.Backtest.MaxBatch <= 0 {
-		c.Backtest.MaxBatch = 1000
-	}
-	if c.Backtest.MaxConcurrent <= 0 {
-		c.Backtest.MaxConcurrent = 2
-	}
 	if c.MCP.TimeoutSeconds <= 0 {
 		c.MCP.TimeoutSeconds = 120
 	}
@@ -757,6 +749,15 @@ func applyDefaults(c *Config) {
 	}
 	if c.Trading.DefaultPositionUSD < 0 {
 		c.Trading.DefaultPositionUSD = 0
+	}
+	if c.Freqtrade.TimeoutSeconds <= 0 {
+		c.Freqtrade.TimeoutSeconds = 15
+	}
+	if c.Freqtrade.DefaultLeverage < 0 {
+		c.Freqtrade.DefaultLeverage = 0
+	}
+	if c.Freqtrade.DefaultStakeUSD < 0 {
+		c.Freqtrade.DefaultStakeUSD = 0
 	}
 }
 
@@ -827,17 +828,6 @@ func validate(c *Config) error {
 			return fmt.Errorf("已启用 Telegram 通知，请提供 bot_token 与 chat_id")
 		}
 	}
-	if c.Backtest.Enabled {
-		if c.Backtest.DataDir == "" {
-			return fmt.Errorf("backtest.data_dir 不能为空")
-		}
-		if c.Backtest.HTTPAddr == "" {
-			return fmt.Errorf("backtest.http_addr 不能为空")
-		}
-		if c.Backtest.RateLimitPerMin <= 0 {
-			return fmt.Errorf("backtest.rate_limit_per_min 需 > 0")
-		}
-	}
 	if c.AI.MultiAgent.Enabled {
 		ma := c.AI.MultiAgent
 		if strings.TrimSpace(ma.IndicatorTemplate) == "" {
@@ -854,6 +844,22 @@ func validate(c *Config) error {
 		}
 		if ma.MaxCharsPerBlock <= 0 {
 			return fmt.Errorf("ai.multi_agent.max_chars_per_block 需 > 0")
+		}
+	}
+	if c.Freqtrade.Enabled {
+		if strings.TrimSpace(c.Freqtrade.APIURL) == "" {
+			return fmt.Errorf("freqtrade.api_url 不能为空")
+		}
+		if strings.TrimSpace(c.Freqtrade.APIToken) == "" {
+			if strings.TrimSpace(c.Freqtrade.Username) == "" || strings.TrimSpace(c.Freqtrade.Password) == "" {
+				return fmt.Errorf("freqtrade 认证需要提供 api_token 或 username+password")
+			}
+		}
+		if c.Freqtrade.DefaultStakeUSD < 0 {
+			return fmt.Errorf("freqtrade.default_stake_usd 需 >= 0")
+		}
+		if c.Freqtrade.DefaultLeverage < 0 {
+			return fmt.Errorf("freqtrade.default_leverage 需 >= 0")
 		}
 	}
 	if c.Trading.Mode == "" {

@@ -211,8 +211,8 @@ func (e *LegacyEngineAdapter) Decide(ctx context.Context, input Context) (Decisi
 	result.Decisions = NormalizeAndAlignDecisions(result.Decisions, input.Positions)
 	best.Parsed.Decisions = result.Decisions
 
+	traceID := uuid.NewString()
 	if e.Observer != nil {
-		traceID := uuid.NewString()
 		e.Observer.AfterDecide(ctx, DecisionTrace{
 			TraceID:       traceID,
 			SystemPrompt:  sys,
@@ -226,6 +226,8 @@ func (e *LegacyEngineAdapter) Decide(ctx context.Context, input Context) (Decisi
 			AgentInsights: cloneAgentInsights(insights),
 		})
 	}
+	result.TraceID = traceID
+	best.Parsed.TraceID = traceID
 	return result, nil
 }
 

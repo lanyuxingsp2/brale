@@ -7,6 +7,8 @@
 env = "dev"
 # log_level：日志级别（debug|info|warn|error）。
 log_level = "info"
+# http_addr：Live HTTP 服务监听地址。
+http_addr = ":9991"
 
 [symbols]
 # provider：default 使用本地列表，http 则从远端拉取。
@@ -196,22 +198,6 @@ dir = "prompts"
 # system_template：默认系统提示模板名（不含 .txt）。
 system_template = "default"
 
-[backtest]
-# enabled：是否启用回测 HTTP 服务。
-enabled = false
-# data_dir：回测数据存储目录。
-data_dir = "data/backtest"
-# http_addr：回测 HTTP 监听地址。
-http_addr = ":9991"
-# default_exchange：回测任务默认使用的数据源。
-default_exchange = "binance"
-# rate_limit_per_min：历史 K 线下载的速率限制。
-rate_limit_per_min = 600
-# max_batch：单次拉取的最大根数。
-max_batch = 1000
-# max_concurrent：允许的并发回测/拉取任务数。
-max_concurrent = 2
-
 [notify.telegram]
 # enabled：是否开启 Telegram 推送。
 enabled = false
@@ -219,6 +205,27 @@ enabled = false
 bot_token = ""
 # chat_id：接收通知的聊天 ID。
 chat_id = ""
+
+[freqtrade]
+# enabled：是否启用 freqtrade 执行器。
+enabled = false
+# api_url：freqtrade API Server 地址（需包含 /api/v1 前缀）。
+api_url = "http://localhost:8080/api/v1"
+# username/password：若未配置 api_token，则使用 Basic Auth。
+username = ""
+password = ""
+# api_token：可选，若填写则替代用户名密码。
+api_token = ""
+# default_stake_usd：Brale 未指定仓位时默认使用的金额。
+default_stake_usd = 100
+# default_leverage：Brale 未指定杠杆时的默认值。
+default_leverage = 1
+# timeout_seconds：调用 freqtrade API 的超时时间。
+timeout_seconds = 15
+# insecure_skip_verify：true 时跳过 HTTPS 证书校验，仅用于内网测试。
+insecure_skip_verify = false
+# webhook_url：freqtrade webook 将回调 Brale 的地址，需与 freqtrade config 保持一致。
+webhook_url = "http://127.0.0.1:9991/api/live/freqtrade/webhook"
 
 [advanced]
 # liquidity_filter_usd_m：按 OI×价格估算的最低流动性（百万 USD）。

@@ -97,24 +97,6 @@ type LiveOrder struct {
 }
 
 // LivePosition 记录实盘持仓状态（预留，暂未对外暴露）。
-type LivePosition struct {
-	ID         int64   `json:"id"`
-	Symbol     string  `json:"symbol"`
-	Side       string  `json:"side"`
-	Entry      float64 `json:"entry_price"`
-	Exit       float64 `json:"exit_price"`
-	Quantity   float64 `json:"quantity"`
-	Notional   float64 `json:"notional"`
-	Leverage   float64 `json:"leverage"`
-	TakeProfit float64 `json:"take_profit"`
-	StopLoss   float64 `json:"stop_loss"`
-	PnL        float64 `json:"pnl"`
-	Status     string  `json:"status"`
-	OpenedAt   int64   `json:"opened_at"`
-	ClosedAt   int64   `json:"closed_at"`
-	UpdatedAt  int64   `json:"updated_at"`
-}
-
 // LiveDecisionQuery 用于筛选实时日志。
 type LiveDecisionQuery struct {
 	Symbol   string
@@ -204,24 +186,6 @@ func ensureDecisionLogSchema(db *sql.DB) error {
 			created_at INTEGER NOT NULL
 		);
 		`,
-		`CREATE TABLE IF NOT EXISTS live_positions (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			symbol TEXT NOT NULL,
-			side TEXT NOT NULL,
-			entry_price REAL,
-			exit_price REAL,
-			quantity REAL,
-			notional REAL,
-			leverage REAL,
-			take_profit REAL,
-			stop_loss REAL,
-			pnl REAL,
-			status TEXT,
-			opened_at INTEGER,
-			closed_at INTEGER,
-			updated_at INTEGER NOT NULL
-		);
-		`,
 		`CREATE TABLE IF NOT EXISTS last_decisions (
 			symbol TEXT PRIMARY KEY,
 			horizon TEXT,
@@ -235,7 +199,6 @@ func ensureDecisionLogSchema(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_live_logs_symbol ON live_decision_logs(symbols);`,
 		`CREATE INDEX IF NOT EXISTS idx_live_orders_symbol ON live_orders(symbol);`,
 		`CREATE INDEX IF NOT EXISTS idx_live_orders_ts ON live_orders(ts);`,
-		`CREATE INDEX IF NOT EXISTS idx_live_positions_symbol ON live_positions(symbol);`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.Exec(stmt); err != nil {
@@ -266,10 +229,6 @@ func ensureDecisionLogColumns(db *sql.DB) error {
 		{"live_orders", "expected_rr", "REAL"},
 		{"last_decisions", "horizon", "TEXT"},
 		{"last_decisions", "decisions_json", "TEXT"},
-		{"live_positions", "notional", "REAL"},
-		{"live_positions", "leverage", "REAL"},
-		{"live_positions", "take_profit", "REAL"},
-		{"live_positions", "stop_loss", "REAL"},
 	}
 	for _, col := range cols {
 		if err := addColumnIfMissing(db, col.table, col.column, col.typ); err != nil {

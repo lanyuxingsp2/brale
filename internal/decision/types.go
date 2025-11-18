@@ -25,6 +25,7 @@ type DecisionResult struct {
 	RawJSON   string // 提取到的 JSON 决策数组文本
 	// MetaSummary: 当使用 meta 聚合时，记录各模型投票与理由的汇总文本（用于通知）
 	MetaSummary string
+	TraceID     string
 }
 
 // DecisionMemory 记录上一轮决策（供 Prompt 回顾）。

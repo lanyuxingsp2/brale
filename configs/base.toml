@@ -3,6 +3,7 @@
 [app]
 env = "dev"
 log_level = "info"
+http_addr = ":9991"
 
 [kline]
 max_cached = 300
@@ -129,17 +130,3 @@ max_position_pct = 0.05
 default_position_usd = 0
 # default_leverage：模型未提供 leverage 时的兜底倍数。
 default_leverage = 10
-
-[backtest]
-# data_dir：回测及行情数据目录。
-data_dir = "data/backtest"
-# http_addr：回测 HTTP 服务监听地址。
-http_addr = ":9991"
-# default_exchange：回测默认交易所。
-default_exchange = "binance"
-# rate_limit_per_min：回测拉取行情的速率限制。
-rate_limit_per_min = 600
-# max_batch：单次下载的最大 K 线条数。
-max_batch = 1000
-# max_concurrent：并发回测/拉取任务最大数量。
-max_concurrent = 2
