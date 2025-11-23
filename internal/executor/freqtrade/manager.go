@@ -3,6 +3,7 @@ package freqtrade
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -31,30 +32,48 @@ type TextNotifier interface {
 
 // APIPosition 用于 /api/live/freqtrade/positions 返回的数据结构。
 type APIPosition struct {
-	TradeID        int       `json:"trade_id"`
-	Symbol         string    `json:"symbol"`
-	Side           string    `json:"side"`
-	EntryPrice     float64   `json:"entry_price"`
-	Amount         float64   `json:"amount"`
-	Stake          float64   `json:"stake"`
-	Leverage       float64   `json:"leverage"`
-	OpenedAt       int64     `json:"opened_at"`
-	HoldingMs      int64     `json:"holding_ms"`
-	StopLoss       float64   `json:"stop_loss,omitempty"`
-	TakeProfit     float64   `json:"take_profit,omitempty"`
-	CurrentPrice   float64   `json:"current_price,omitempty"`
-	PnLRatio       float64   `json:"pnl_ratio,omitempty"`
-	PnLUSD         float64   `json:"pnl_usd,omitempty"`
-	RemainingRatio float64   `json:"remaining_ratio,omitempty"`
-	Tier1          TierInfo  `json:"tier1"`
-	Tier2          TierInfo  `json:"tier2"`
-	Tier3          TierInfo  `json:"tier3"`
-	TierNotes      string    `json:"tier_notes,omitempty"`
-	TierLogs       []TierLog `json:"tier_logs,omitempty"`
-	Status         string    `json:"status"`
-	ClosedAt       int64     `json:"closed_at,omitempty"`
-	ExitPrice      float64   `json:"exit_price,omitempty"`
-	ExitReason     string    `json:"exit_reason,omitempty"`
+	TradeID        int                  `json:"trade_id"`
+	Symbol         string               `json:"symbol"`
+	Side           string               `json:"side"`
+	EntryPrice     float64              `json:"entry_price"`
+	Amount         float64              `json:"amount"`
+	Stake          float64              `json:"stake"`
+	Leverage       float64              `json:"leverage"`
+	OpenedAt       int64                `json:"opened_at"`
+	HoldingMs      int64                `json:"holding_ms"`
+	StopLoss       float64              `json:"stop_loss,omitempty"`
+	TakeProfit     float64              `json:"take_profit,omitempty"`
+	CurrentPrice   float64              `json:"current_price,omitempty"`
+	PnLRatio       float64              `json:"pnl_ratio,omitempty"`
+	PnLUSD         float64              `json:"pnl_usd,omitempty"`
+	RemainingRatio float64              `json:"remaining_ratio,omitempty"`
+	Tier1          TierInfo             `json:"tier1"`
+	Tier2          TierInfo             `json:"tier2"`
+	Tier3          TierInfo             `json:"tier3"`
+	TierNotes      string               `json:"tier_notes,omitempty"`
+	TierLogs       []TierLog            `json:"tier_logs,omitempty"`
+	Events         []storage.TradeEvent `json:"events,omitempty"`
+	Status         string               `json:"status"`
+	ClosedAt       int64                `json:"closed_at,omitempty"`
+	ExitPrice      float64              `json:"exit_price,omitempty"`
+	ExitReason     string               `json:"exit_reason,omitempty"`
+}
+
+type tradeNotFoundError struct {
+	Symbol string
+	Side   string
+}
+
+func (e tradeNotFoundError) Error() string {
+	sym := strings.ToUpper(strings.TrimSpace(e.Symbol))
+	if sym == "" {
+		sym = "UNKNOWN"
+	}
+	side := strings.ToLower(strings.TrimSpace(e.Side))
+	if side == "" {
+		side = "unknown"
+	}
+	return fmt.Sprintf("freqtrade trade_id not found for %s %s", sym, side)
 }
 
 type TierInfo struct {
@@ -443,7 +462,7 @@ func (m *Manager) close(ctx context.Context, traceID string, d decision.Decision
 	}
 	tradeID, ok := m.lookupTrade(d.Symbol, side)
 	if !ok {
-		return fmt.Errorf("freqtrade trade_id not found for %s %s", d.Symbol, side)
+		return tradeNotFoundError{Symbol: d.Symbol, Side: side}
 	}
 	payload := ForceExitPayload{TradeID: fmt.Sprintf("%d", tradeID)}
 	ratio := clampCloseRatio(d.CloseRatio)
@@ -1156,9 +1175,15 @@ func (m *Manager) PositionsForAPI(ctx context.Context, opts PositionListOptions)
 			api.RemainingRatio = 0
 		}
 		var logs []TierLog
+		var events []storage.TradeEvent
 		if includeLogs || rec.TierNotes == "" {
 			if fetched, err := m.loadTierLogs(ctx, pos.TradeID, logsLimit); err == nil {
 				logs = fetched
+			}
+		}
+		if includeLogs {
+			if evs, err := m.ListTradeEvents(ctx, pos.TradeID, logsLimit); err == nil {
+				events = evs
 			}
 		}
 		if api.TierNotes == "" && len(logs) > 0 {
@@ -1166,6 +1191,9 @@ func (m *Manager) PositionsForAPI(ctx context.Context, opts PositionListOptions)
 		}
 		if includeLogs && len(logs) > 0 {
 			api.TierLogs = logs
+		}
+		if includeLogs && len(events) > 0 {
+			api.Events = events
 		}
 		list = append(list, api)
 	}
@@ -2077,6 +2105,12 @@ func (m *Manager) handleTierHit(ctx context.Context, traceID, tierName string, p
 		Reasoning:  reason,
 	}
 	if err := m.close(ctx, traceID, dec); err != nil {
+		var nfErr tradeNotFoundError
+		if errors.As(err, &nfErr) {
+			m.markAutoActionSkipped(rec, tierName, "Freqtrade 未找到仓位，跳过自动执行")
+			logger.Warnf("自动执行 %s 跳过：仓位不存在 trade_id=%d symbol=%s", strings.ToUpper(tierName), pos.TradeID, strings.ToUpper(pos.Symbol))
+			return nil
+		}
 		return err
 	}
 	oldStop := rec.StopLoss
@@ -2228,6 +2262,13 @@ func (m *Manager) forceClose(ctx context.Context, pos Position, reasonType strin
 	}
 	traceID := m.ensureTrace(fmt.Sprintf("force-%s-%d", reasonType, time.Now().UnixNano()))
 	if err := m.close(ctx, traceID, dec); err != nil {
+		var nfErr tradeNotFoundError
+		if errors.As(err, &nfErr) {
+			skipNote := fmt.Sprintf("Freqtrade 未找到仓位，跳过 %s", strings.ToUpper(reasonType))
+			m.markAutoActionSkipped(rec, reasonType, skipNote)
+			logger.Warnf("强制%s跳过：仓位不存在 trade_id=%d symbol=%s", strings.ToUpper(reasonType), pos.TradeID, strings.ToUpper(pos.Symbol))
+			return
+		}
 		logger.Warnf("强制%s失败 trade_id=%d: %v", reasonType, pos.TradeID, err)
 		return
 	}

@@ -69,6 +69,15 @@ func (c *lastDecisionCache) Delete(symbol string) {
 	c.mu.Unlock()
 }
 
+func (c *lastDecisionCache) Reset() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.data = make(map[string]decision.DecisionMemory)
+	c.mu.Unlock()
+}
+
 func (c *lastDecisionCache) Snapshot(now time.Time) []decision.DecisionMemory {
 	if c == nil {
 		return nil

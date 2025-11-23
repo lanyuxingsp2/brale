@@ -280,6 +280,14 @@
                         {{ formatTierLog(log) }}
                       </li>
                     </ul>
+                    <div class="trade-events" v-if="pos.events && pos.events.length">
+                      <h4>执行时间线</h4>
+                      <ul>
+                        <li v-for="ev in pos.events" :key="ev.id || ev.created_at">
+                          {{ formatTradeEvent(ev) }}
+                        </li>
+                      </ul>
+                    </div>
                   </div>
                 </td>
               </tr>

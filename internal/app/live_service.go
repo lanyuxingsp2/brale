@@ -195,10 +195,14 @@ func (s *LiveService) tickDecision(ctx context.Context) error {
 		})
 	}
 	positions := s.livePositions(input.Account)
-	if len(positions) > 0 {
-		input.Positions = positions
-	}
-	if s.includeLastDecision && s.lastDec != nil {
+	input.Positions = positions
+	hasPositions := len(positions) > 0
+	if !hasPositions {
+		if s.lastDec != nil {
+			s.lastDec.Reset()
+		}
+		s.lastRawJSON = ""
+	} else if s.includeLastDecision && s.lastDec != nil {
 		snap := s.filterLastDecisionSnapshot(s.lastDec.Snapshot(time.Now()), positions)
 		if len(snap) > 0 {
 			input.LastDecisions = snap
@@ -239,6 +243,7 @@ func (s *LiveService) tickDecision(ctx context.Context) error {
 		res.Decisions[i].Action = decision.NormalizeAction(res.Decisions[i].Action)
 	}
 	res.Decisions = decision.OrderAndDedup(res.Decisions)
+	res.Decisions = s.filterPositionDependentDecisions(res.Decisions, hasPositions)
 	if len(res.Decisions) > 0 {
 		tFinal := decision.RenderFinalDecisionsTable(res.Decisions, 180)
 		logger.Infof("\n%s", tFinal)
@@ -521,6 +526,26 @@ func (s *LiveService) filterLastDecisionSnapshot(records []decision.DecisionMemo
 		out = append(out, mem)
 	}
 	return out
+}
+
+func (s *LiveService) filterPositionDependentDecisions(decisions []decision.Decision, hasPositions bool) []decision.Decision {
+	if hasPositions || len(decisions) == 0 {
+		return decisions
+	}
+	allowed := decisions[:0]
+	dropped := 0
+	for _, d := range decisions {
+		switch d.Action {
+		case "close_long", "close_short", "update_tiers", "adjust_stop_loss", "adjust_take_profit":
+			dropped++
+			continue
+		}
+		allowed = append(allowed, d)
+	}
+	if dropped > 0 {
+		logger.Infof("当前无持仓，忽略 %d 条需持仓的决策", dropped)
+	}
+	return allowed
 }
 
 func (s *LiveService) livePositions(account decision.AccountSnapshot) []decision.PositionSnapshot {

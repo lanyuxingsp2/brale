@@ -67,7 +67,7 @@ func (r *Router) handleLiveDecisions(c *gin.Context) {
 		Limit:    limit,
 		Offset:   offset,
 		Provider: c.Query("provider"),
-		Stage:    c.Query("stage"),
+		Stage:    c.DefaultQuery("stage", "core"),
 		Symbol:   c.Query("symbol"),
 	}
 	logs, err := r.Logs.ListDecisions(c.Request.Context(), query)

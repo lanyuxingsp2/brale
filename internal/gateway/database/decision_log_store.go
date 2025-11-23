@@ -365,10 +365,14 @@ func (s *DecisionLogStore) ListDecisions(ctx context.Context, q LiveDecisionQuer
 		args = append(args, q.Provider)
 	}
 	stage := strings.TrimSpace(q.Stage)
+	if stage == "" {
+		stage = "core"
+	}
 	switch stage {
-	case "":
 	case "core":
 		sb.WriteString(" AND (stage='final' OR stage='provider' OR stage LIKE 'agent:%')")
+	case "all":
+		// no-op
 	default:
 		sb.WriteString(" AND stage=?")
 		args = append(args, stage)

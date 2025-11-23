@@ -138,6 +138,8 @@ const App = {
           return 'executor';
         case 'freqtrade':
           return 'freqtrade';
+        case 'all':
+          return 'all';
         default:
           return '';
       }
@@ -487,6 +489,27 @@ const App = {
       const target = `${this.formatNumber(log.old_target)} → ${this.formatNumber(log.new_target)}`;
       const ratio = `${this.formatPercent(log.old_ratio)} → ${this.formatPercent(log.new_ratio)}`;
       return `${ts} · ${log.tier_name?.toUpperCase() || ''} 价格 ${target} 比例 ${ratio} · ${log.source || ''} ${log.reason || ''}`;
+    },
+    formatTradeEvent(ev) {
+      if (!ev) return '-';
+      const ts = ev.created_at ? this.formatTs(ev.created_at) : '-';
+      const event = ev.event ? ev.event.toUpperCase() : 'EVENT';
+      const parts = [];
+      if (ev.detail) parts.push(ev.detail);
+      if (typeof ev.stop_loss === 'number' && ev.stop_loss) {
+        parts.push(`SL=${this.formatNumber(ev.stop_loss)}`);
+      }
+      if (typeof ev.take_profit === 'number' && ev.take_profit) {
+        parts.push(`TP=${this.formatNumber(ev.take_profit)}`);
+      }
+      const tierInfo = [ev.tier1_target, ev.tier2_target, ev.tier3_target]
+        .map((t) => (typeof t === 'number' && t ? this.formatNumber(t) : ''))
+        .filter(Boolean);
+      if (tierInfo.length) {
+        parts.push(`Tiers=${tierInfo.join('/')}`);
+      }
+      if (ev.source) parts.push(ev.source);
+      return `${ts} · ${event}${parts.length ? ' · ' + parts.join(' · ') : ''}`;
     },
     async quickClose(pos) {
       if (!pos) return;
