@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Break A Leg · Console</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap">
+    <link rel="stylesheet" href="/static/css/notion.css">
+</head>
+<body>
+    <script type="text/x-template" id="app-template">
+        <div class="app-frame" :class="{'nav-collapsed': navCollapsed}">
+            <aside class="side-nav">
+                <div class="nav-logo">
+                    <div class="emoji">📘</div>
+                    <div>
+                        <p class="nav-label">Break A Leg</p>
+                        <h2>Live Console</h2>
+                    </div>
+                </div>
+                <div class="nav-links">
+                    <button class="nav-item" :class="{active: view==='desk'}" @click="switchView('desk')">Desk · 总览</button>
+                    <button class="nav-item" :class="{active: view==='decisions'}" @click="switchView('decisions')">Blue Book · 决策</button>
+                    <button class="nav-item" :class="{active: view==='positions'}" @click="switchView('positions')">Red Book · 仓位</button>
+                    <button class="nav-item" :class="{active: view==='logs'}" @click="switchView('logs')">Logs · 实时</button>
+                </div>
+                <div class="nav-footer">Notion 视图 · 无鉴权 · 实盘 API</div>
+            </aside>
+
+            <main class="main-panel">
+                <header class="page-header">
+                    <div>
+                        <p class="eyebrow">[[ headline.eyebrow ]]</p>
+                        <h1>[[ headline.title ]]</h1>
+                        <p class="muted" v-if="headline.desc">[[ headline.desc ]]</p>
+                    </div>
+                    <div class="actions">
+                        <button class="pill-btn" @click="navCollapsed = !navCollapsed">[[ navCollapsed ? '显示导航' : '隐藏导航' ]]</button>
+                        <button class="pill-btn" @click="refreshCurrent" :disabled="loadingAny">刷新</button>
+                        <button class="pill-btn primary" @click="switchView('positions')">快速查看仓位</button>
+                    </div>
+                </header>
+
+                <section v-if="view==='desk'" class="stack">
+                    <div class="notion-block">
+                        <div class="block-header">
+                            <div>
+                                <p class="notion-section-title">Decision Stream</p>
+                                <h2>最新决策胶囊</h2>
+                            </div>
+                            <div class="muted">实时拉取 /api/live/decisions · stage=final</div>
+                        </div>
+                        <div v-if="desk.loading" class="block-skeleton">加载决策流...</div>
+                        <div v-else>
+                            <div v-if="desk.error" class="callout error">[[ desk.error ]]</div>
+                            <div class="capsule-list" v-if="desk.decisions.length">
+                                <div class="capsule-card" v-for="item in desk.decisions" :key="item.log.id" @click="openDecision(item.log.id)">
+                                    <div class="capsule-time">
+                                        <div class="time">[[ formatTime(item.log.ts) ]]</div>
+                                        <div class="date">[[ formatDate(item.log.ts) ]]</div>
+                                    </div>
+                                    <div class="capsule-body">
+                                        <div class="card-title">
+                                            <span>[[ item.log.symbols && item.log.symbols.length ? item.log.symbols.join(' / ') : '多标的' ]]</span>
+                                            <span class="badge" :class="badgeClass(item.action)">[[ item.actionLabel ]]</span>
+                                        </div>
+                                        <div class="card-meta">H [[ item.log.horizon || 'N/A' ]] · [[ item.stepCount ]] steps</div>
+                                        <p class="card-text">[[ item.summary ]]</p>
+                                    </div>
+                                    <div class="text-right">
+                                        <div class="agent-dots justify-end mb-2">
+                                            <span class="agent-dot" v-for="dot in Math.min(item.providerCount,4)" :key="dot"></span>
+                                            <span v-if="item.providerCount>4" class="agent-dot" :title="'+'+(item.providerCount-4)"></span>
+                                        </div>
+                                        <div class="text-xs text-slate-500 uppercase tracking-[0.35em]">[[ item.providerCount ]] Agents</div>
+                                        <div class="text-[11px] mt-2" :class="item.hasError ? 'text-red-500' : 'text-emerald-600'">
+                                            [[ item.hasError ? '⚠︎ 风控关注' : '稳态通过' ]]
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <p v-else class="muted italic">暂无决策记录。</p>
+                        </div>
+                    </div>
+
+                    <div class="notion-block">
+                        <div class="block-header">
+                            <div>
+                                <p class="notion-section-title">Position Monitor</p>
+                                <h2>最新持仓</h2>
+                            </div>
+                            <div class="muted">数据来自 /api/live/freqtrade/positions</div>
+                        </div>
+                        <div v-if="desk.loading" class="block-skeleton">加载仓位...</div>
+                        <div v-else>
+                            <div v-if="desk.error" class="callout error">[[ desk.error ]]</div>
+                            <div class="pos-grid" v-if="desk.positions.length">
+                                <div class="pos-card" v-for="p in desk.positions" :key="p.trade_id" @click="openPosition(p.trade_id)">
+                                    <div>
+                                        <div class="pos-symbol">[[ p.symbol ]]</div>
+                                        <div class="pos-meta">[[ (p.side || '').toUpperCase() ]] · x[[ p.leverage ]]</div>
+                                        <div class="pos-sub mt-2">Entry [[ formatNumber(p.entry_price) ]]</div>
+                                    </div>
+                                    <div class="text-right">
+                                        <div class="pos-pnl" :class="p.pnl_ratio>0 ? 'positive' : (p.pnl_ratio<0 ? 'negative' : '')">[[ formatUSD(p.pnl_usd) ]]</div>
+                                        <div class="pos-sub">ROE [[ formatPercent(p.pnl_ratio) ]]</div>
+                                        <div class="pos-sub mt-2">SL [[ formatNumber(p.stop_loss) ]] / TP [[ formatNumber(p.take_profit) ]]</div>
+                                    </div>
+                                </div>
+                            </div>
+                            <p v-else class="muted italic">暂无持仓。</p>
+                        </div>
+                    </div>
+                </section>
+
+                <section v-if="view==='decisions'" class="stack">
+                    <div class="notion-block">
+                        <div class="block-header">
+                            <div>
+                                <p class="notion-section-title">筛选</p>
+                                <h2>币种快速筛选</h2>
+                                <p class="muted">点击标签多选 · 默认列出全部</p>
+                            </div>
+                            <div class="muted">共 [[ decisions.total ]] 条</div>
+                        </div>
+                        <div class="filter-tags">
+                            <button class="tag" :class="{active: !decisions.symbols.length}" @click="clearSymbols">All</button>
+                            <button class="tag" v-for="sym in defaultSymbols" :key="sym" :class="{active: decisions.symbols.includes(sym)}" @click="toggleSymbol(sym)">[[ sym ]]</button>
+                        </div>
+                    </div>
+
+                    <div class="notion-block">
+                        <div class="block-header">
+                            <div>
+                                <p class="notion-section-title">决策流</p>
+                                <h2>胶囊式决策流</h2>
+                                <p class="muted">点击展开整轮思维链</p>
+                            </div>
+                            <div class="muted">Page [[ decisions.page ]]</div>
+                        </div>
+                        <div v-if="decisions.loading" class="block-skeleton">加载决策流...</div>
+                        <div v-else>
+                            <div v-if="decisions.error" class="callout error">[[ decisions.error ]]</div>
+                            <div class="capsule-list" v-if="decisions.items.length">
+                                <div class="capsule-card" v-for="item in decisions.items" :key="item.log.id" @click="openDecision(item.log.id)">
+                                    <div class="capsule-time">
+                                        <div class="time">[[ formatTime(item.log.ts) ]]</div>
+                                        <div class="date">[[ formatDate(item.log.ts) ]]</div>
+                                    </div>
+                                    <div class="capsule-body">
+                                        <div class="card-title">
+                                            <span>[[ item.log.symbols && item.log.symbols.length ? item.log.symbols.join(' / ') : '多标的' ]]</span>
+                                            <span class="badge" :class="badgeClass(item.action)">[[ item.actionLabel ]]</span>
+                                        </div>
+                                        <div class="card-meta">H [[ item.log.horizon || 'N/A' ]] · [[ item.stepCount ]] steps</div>
+                                        <p class="card-text">[[ item.summary ]]</p>
+                                    </div>
+                                    <div class="text-right min-w-[120px]">
+                                        <div class="agent-dots justify-end mb-2">
+                                            <span class="agent-dot" v-for="dot in Math.min(item.providerCount,4)" :key="dot"></span>
+                                            <span v-if="item.providerCount>4" class="agent-dot" :title="'+'+(item.providerCount-4)"></span>
+                                        </div>
+                                        <div class="text-xs text-slate-500 uppercase tracking-[0.35em]">[[ item.providerCount ]] Agents</div>
+                                        <div class="text-[11px] mt-2" :class="item.hasError ? 'text-red-500' : 'text-emerald-600'">[[ item.hasError ? '⚠︎ Issues' : 'Clean pass' ]]</div>
+                                    </div>
+                                </div>
+                            </div>
+                            <p v-else class="muted italic">暂无决策记录。</p>
+                        </div>
+                        <div class="pager" v-if="decisions.total > decisions.pageSize">
+                            <button class="pill-btn" :disabled="decisions.page<=1" @click="changeDecisionPage(-1)">上一页</button>
+                            <span class="muted">第 [[ decisions.page ]] 页</span>
+                            <button class="pill-btn" :disabled="decisions.page>=decisionTotalPages" @click="changeDecisionPage(1)">下一页</button>
+                        </div>
+                    </div>
+                </section>
+
+                <section v-if="view==='decisionDetail'" class="stack">
+                    <div class="notion-block">
+                        <div class="block-header">
+                            <div>
+                                <p class="notion-section-title">决策详情</p>
+                                <h2>Trace #[[ decisionDetail.id ]]</h2>
+                            </div>
+                            <div class="actions">
+                                <button class="pill-btn" @click="switchView('decisions')">返回列表</button>
+                            </div>
+                        </div>
+                        <div v-if="decisionDetail.loading" class="block-skeleton">加载决策详情...</div>
+                        <div v-else>
+                            <div v-if="decisionDetail.error" class="callout error">[[ decisionDetail.error ]]</div>
+                            <div v-if="decisionDetail.data">
+                                <div class="detail-head">
+                                    <div>
+                                        <p class="muted">[[ decisionDetail.data.log.symbols && decisionDetail.data.log.symbols.length ? decisionDetail.data.log.symbols.join(' / ') : '多标的' ]]</p>
+                                        <h3>[[ decisionHeadline(decisionDetail.data.log, decisionDetail.data.trace) ]]</h3>
+                                        <p class="muted">H [[ decisionDetail.data.log.horizon || 'N/A' ]] · [[ formatDateTime(decisionDetail.data.log.ts) ]]</p>
+                                    </div>
+                                    <div class="badge" :class="badgeClass(decisionHeadlineAction(decisionDetail.data.log, decisionDetail.data.trace))">[[ decisionHeadline(decisionDetail.data.log, decisionDetail.data.trace) ]]</div>
+                                </div>
+                                <div class="notion-block mt-4">
+                                    <div class="block-header">
+                                        <div>
+                                            <p class="notion-section-title">筛选</p>
+                                            <h3>按阶段 / Provider 过滤</h3>
+                                        </div>
+                                        <div class="flex gap-2 items-center">
+                                            <select class="input" v-model="decisionFilters.provider">
+                                                <option value="">全部 Provider</option>
+                                                <option v-for="p in decisionProviders" :key="p" :value="p">[[ p ]]</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <div class="filter-tags">
+                                        <button class="tag" :class="{active: decisionFilters.stage==='all'}" @click="setStageFilter('all')">全部</button>
+                                        <button class="tag" :class="{active: decisionFilters.stage==='provider'}" @click="setStageFilter('provider')">Provider</button>
+                                        <button class="tag" :class="{active: decisionFilters.stage==='agent'}" @click="setStageFilter('agent')">Agent</button>
+                                        <button class="tag" :class="{active: decisionFilters.stage==='final'}" @click="setStageFilter('final')">Final</button>
+                                        <button class="tag" :class="{active: decisionFilters.stage==='other'}" @click="setStageFilter('other')">Other</button>
+                                    </div>
+                                </div>
+                                <div class="step-list" v-if="decisionDetail.data.trace && decisionDetail.data.trace.steps">
+                                    <div class="step-card" v-for="(step, idx) in filteredDecisionSteps" :key="idx">
+                                        <div class="step-head">
+                                            <span>[[ step.stage ]] · [[ step.provider_id || 'N/A' ]]</span>
+                                            <span>[[ formatDateTime(step.ts) ]]</span>
+                                        </div>
+                                        <div class="step-label">User</div>
+                                        <pre class="step-text">[[ step.user_prompt || '—' ]]</pre>
+                                        <div class="step-label">Output</div>
+                                        <pre class="step-text">[[ step.meta_summary || step.raw_output || '—' ]]</pre>
+                                        <div class="step-label" v-if="step.decisions && step.decisions.length">Parsed Decisions</div>
+                                        <ul v-if="step.decisions && step.decisions.length" class="decision-list">
+                                            <li v-for="d in step.decisions" :key="d.action">
+                                                <span class="badge" :class="badgeClass(d.action)">[[ d.action.toUpperCase() ]]</span>
+                                                <span class="muted ml-2">TP [[ formatNumber(d.take_profit) ]] · SL [[ formatNumber(d.stop_loss) ]]</span>
+                                            </li>
+                                        </ul>
+                                        <div class="step-error" v-if="step.error">⚠︎ [[ step.error ]]</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <section v-if="view==='positions'" class="stack">
+                    <div class="notion-block">
+                        <div class="block-header">
+                            <div>
+                                <p class="notion-section-title">筛选</p>
+                                <h2>持仓筛选</h2>
+                            </div>
+                            <div class="flex gap-2 items-center">
+                                <input class="input" placeholder="Symbol，如 BTCUSDT" v-model="positions.symbol" @keyup.enter="loadPositions(true)">
+                                <button class="pill-btn" @click="loadPositions(true)">查询</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="notion-block">
+                            <div class="block-header">
+                                <div>
+                                    <p class="notion-section-title">仓位列表</p>
+                                    <h2>Red Book</h2>
+                                </div>
+                            <div class="muted">Page [[ positions.page ]]</div>
+                        </div>
+                        <div v-if="positions.loading" class="block-skeleton">加载仓位...</div>
+                        <div v-else>
+                            <div v-if="positions.error" class="callout error">[[ positions.error ]]</div>
+                            <div class="pos-grid" v-if="positions.items.length">
+                                <div class="pos-card" v-for="p in positions.items" :key="p.trade_id" @click="openPosition(p.trade_id)">
+                                    <div>
+                                        <div class="pos-symbol">[[ p.symbol ]]</div>
+                                        <div class="pos-meta">[[ (p.side || '').toUpperCase() ]] · x[[ p.leverage ]]</div>
+                                        <div class="pos-sub mt-2">Entry [[ formatNumber(p.entry_price) ]]</div>
+                                    </div>
+                                    <div class="text-right">
+                                        <div class="pos-pnl" :class="p.pnl_ratio>0 ? 'positive' : (p.pnl_ratio<0 ? 'negative' : '')">[[ formatUSD(p.pnl_usd) ]]</div>
+                                        <div class="pos-sub">ROE [[ formatPercent(p.pnl_ratio) ]]</div>
+                                        <div class="pos-sub mt-2">SL [[ formatNumber(p.stop_loss) ]] / TP [[ formatNumber(p.take_profit) ]]</div>
+                                    </div>
+                                </div>
+                            </div>
+                            <p v-else class="muted italic">暂无持仓。</p>
+                        </div>
+                        <div class="pager" v-if="positions.total > positions.pageSize">
+                            <button class="pill-btn" :disabled="positions.page<=1" @click="changePositionPage(-1)">上一页</button>
+                            <span class="muted">第 [[ positions.page ]] 页</span>
+                            <button class="pill-btn" :disabled="positions.page>=positionTotalPages" @click="changePositionPage(1)">下一页</button>
+                        </div>
+                    </div>
+                    <div class="notion-block" v-if="positions.closed && positions.closed.length">
+                        <div class="block-header">
+                            <div>
+                                <p class="notion-section-title">已平仓</p>
+                                <h2>Closed Positions</h2>
+                            </div>
+                        </div>
+                        <div class="pos-grid">
+                            <div class="pos-card" v-for="p in positions.closed" :key="'closed-'+p.trade_id">
+                                <div>
+                                    <div class="pos-symbol">[[ p.symbol ]]</div>
+                                    <div class="pos-meta">[[ (p.side || '').toUpperCase() ]] · x[[ p.leverage ]]</div>
+                                    <div class="pos-sub mt-2">Entry [[ formatNumber(p.entry_price) ]] · Exit [[ formatNumber(p.exit_price) ]]</div>
+                                </div>
+                                <div class="text-right">
+                                    <div class="pos-pnl" :class="p.pnl_ratio>0 ? 'positive' : (p.pnl_ratio<0 ? 'negative' : '')">
+                                        [[ p.pnl_ratio>0 ? '已盈利 ' : (p.pnl_ratio<0 ? '已亏损 ' : '') ]][[ formatUSD(p.pnl_usd) ]]
+                                    </div>
+                                    <div class="pos-sub">ROE [[ formatPercent(p.pnl_ratio) ]]</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <section v-if="view==='positionDetail'" class="stack">
+                            <div class="notion-block">
+                                <div class="block-header">
+                                    <div>
+                                        <p class="notion-section-title">仓位详情</p>
+                                        <h2>Trade #[[ positionDetail.tradeId ]]</h2>
+                                        <div class="muted" v-if="positionDetail.data && positionDetail.data.status==='closed'">已平仓</div>
+                                    </div>
+                                    <div class="actions">
+                                        <button class="pill-btn" @click="switchView('positions')">返回列表</button>
+                                        <button class="pill-btn danger" @click="forceClosePosition" :disabled="positionDetail.loading || (positionDetail.data && positionDetail.data.status==='closed')">手动全平</button>
+                                    </div>
+                                </div>
+                                <div v-if="positionDetail.loading" class="block-skeleton">加载仓位详情...</div>
+                                <div v-else>
+                                    <div v-if="positionDetail.error" class="callout error">[[ positionDetail.error ]]</div>
+                                    <div v-if="positionDetail.data" class="detail-grid">
+                                <div class="detail-card">
+                                    <p class="muted">标的 / 方向</p>
+                                    <h3>[[ positionDetail.data.symbol ]] · [[ (positionDetail.data.side || '').toUpperCase() ]] x[[ positionDetail.data.leverage ]]</h3>
+                                    <p class="muted">Entry [[ formatNumber(positionDetail.data.entry_price) ]] · Current [[ formatNumber(positionDetail.data.current_price) ]]</p>
+                                </div>
+                                <div class="detail-card">
+                                    <p class="muted">盈亏</p>
+                                    <h3 :class="positionDetail.data.pnl_ratio>0 ? 'text-emerald-600' : (positionDetail.data.pnl_ratio<0 ? 'text-red-600' : '')">[[ formatUSD(positionDetail.data.pnl_usd) ]]</h3>
+                                    <p class="muted">ROE [[ formatPercent(positionDetail.data.pnl_ratio) ]]</p>
+                                    <p class="muted" v-if="positionDetail.data.status==='closed'">已平仓</p>
+                                </div>
+                                <div class="detail-card">
+                                    <p class="muted">止盈 / 止损</p>
+                                    <h3>TP [[ formatNumber(positionDetail.data.take_profit) ]] · SL [[ formatNumber(positionDetail.data.stop_loss) ]]</h3>
+                                    <p class="muted">Remaining [[ positionDetail.data.status==='closed' ? '0%' : formatPercent(positionDetail.data.remaining_ratio || 1) ]]</p>
+                                </div>
+                                <div class="detail-card">
+                                    <p class="muted">价值 / 保证金</p>
+                                    <h3>持仓 [[ formatNumber(positionDetail.data.position_value) ]] / 保证金 [[ formatNumber(positionDetail.data.stake) ]]</h3>
+                                    <p class="muted">已持有 [[ formatDuration(positionDetail.data.holding_ms) ]]</p>
+                                </div>
+                            </div>
+
+                            <div class="tier-board" v-if="positionDetail.data">
+                                <div class="tier-row" v-for="tier in tierRows(positionDetail.data)" :key="tier.name">
+                                    <div class="tier-name">[[ tier.name ]]</div>
+                                    <div class="tier-target">[[ tier.target ]]</div>
+                                    <div class="tier-ratio">[[ tier.ratio ]]</div>
+                                    <div class="tier-status" :class="tier.done || positionDetail.data.status==='closed' ? 'done' : ''">[[ (tier.done || positionDetail.data.status==='closed') ? '✅' : '待触发' ]]</div>
+                                </div>
+                            </div>
+
+                                <div class="notion-block mt-6">
+                                    <div class="block-header">
+                                        <h3>修改日志</h3>
+                                        <div class="muted">最近变更</div>
+                                    </div>
+                                    <div v-if="!positionDetail.data.tier_logs || !positionDetail.data.tier_logs.length" class="muted italic">暂无日志</div>
+                                    <div class="log-list" v-else>
+                                        <div class="log-row" v-for="log in positionDetail.data.tier_logs" :key="log.timestamp">
+                                            <div>[[ formatDateTime(log.timestamp) ]]</div>
+                                        <div class="muted">[[ tierFieldLabelCN(log.field) ]]</div>
+                                            <div>[[ log.old_value ]] → [[ log.new_value ]]</div>
+                                            <div class="muted">[[ log.reason ]]</div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="notion-block mt-6">
+                                    <div class="block-header">
+                                        <h3>事件流水</h3>
+                                        <div class="muted">来自 trade_operation_log</div>
+                                    </div>
+                                    <div v-if="!positionDetail.data.events || !positionDetail.data.events.length" class="muted italic">暂无事件</div>
+                                <div class="log-list" v-else>
+                                    <div class="log-row" v-for="ev in positionDetail.data.events" :key="ev.timestamp">
+                                        <div>[[ formatDateTime(ev.timestamp) ]]</div>
+                                    <div class="muted">[[ operationLabel(ev.operation) ]]</div>
+                                        <div class="muted">[[ ev.details && ev.details.reason ]]</div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="notion-block mt-6" v-if="positionDetail.data">
+                                <div class="block-header">
+                                    <h3>手动调整 TP/SL 与分段</h3>
+                                    <div class="muted">提交后将通过 /api/live/freqtrade/tiers 更新</div>
+                                </div>
+                                <div class="grid gap-4" style="grid-template-columns: repeat(12, minmax(0, 1fr));">
+                                    <label class="form-row col-span-6">
+                                        <span>止盈价格</span>
+                                        <input class="input" type="number" v-model.number="tierForm.take_profit" step="0.0001">
+                                    </label>
+                                    <label class="form-row col-span-6">
+                                        <span>止损价格</span>
+                                        <input class="input" type="number" v-model.number="tierForm.stop_loss" step="0.0001">
+                                    </label>
+
+                                    <label class="form-row col-span-6">
+                                        <span>一阶价格</span>
+                                        <input class="input" type="number" v-model.number="tierForm.tier1_target" step="0.0001">
+                                    </label>
+                                    <label class="form-row col-span-6">
+                                        <span>一阶比例</span>
+                                        <input class="input" type="number" v-model.number="tierForm.tier1_ratio" step="0.01" min="0" max="1">
+                                    </label>
+
+                                    <label class="form-row col-span-6">
+                                        <span>二阶价格</span>
+                                        <input class="input" type="number" v-model.number="tierForm.tier2_target" step="0.0001">
+                                    </label>
+                                    <label class="form-row col-span-6">
+                                        <span>二阶比例</span>
+                                        <input class="input" type="number" v-model.number="tierForm.tier2_ratio" step="0.01" min="0" max="1">
+                                    </label>
+
+                                    <label class="form-row col-span-6">
+                                        <span>三阶价格</span>
+                                        <input class="input" type="number" v-model.number="tierForm.tier3_target" step="0.0001">
+                                    </label>
+                                    <label class="form-row col-span-6">
+                                        <span>三阶比例</span>
+                                        <input class="input" type="number" v-model.number="tierForm.tier3_ratio" step="0.01" min="0" max="1">
+                                    </label>
+
+                                    <label class="form-row col-span-12">
+                                        <span>备注</span>
+                                        <input class="input" type="text" v-model="tierForm.reason" placeholder="变更原因">
+                                    </label>
+                                </div>
+                                <div class="mt-4 flex justify-end">
+                                    <button class="pill-btn primary" @click="updateTierSettings" :disabled="positionDetail.loading">提交修改</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <section v-if="view==='logs'" class="stack">
+                    <div class="notion-block">
+                        <div class="block-header">
+                            <div>
+                                <p class="notion-section-title">实时日志</p>
+                                <h2>Logs</h2>
+                                <p class="muted">拉取后端 log_path/llm_log_path 最近若干行</p>
+                            </div>
+                            <div class="actions">
+                                <select class="input" v-model="logs.name" @change="loadLogs(true)">
+                                    <option v-for="name in logs.available" :key="name" :value="name">[[ name ]]</option>
+                                </select>
+                                <button class="pill-btn" @click="loadLogs(true)" :disabled="logs.loading">刷新</button>
+                            </div>
+                        </div>
+                        <div v-if="logs.loading" class="block-skeleton">加载日志...</div>
+                        <div v-else>
+                            <div v-if="logs.error" class="callout error">[[ logs.error ]]</div>
+                            <div class="log-view" v-if="logs.lines.length">
+                                <div class="log-line" v-for="(line, idx) in logs.lines" :key="idx">[[ line ]]</div>
+                            </div>
+                            <p v-else class="muted italic">暂无日志内容</p>
+                        </div>
+                    </div>
+                </section>
+            </main>
+        </div>
+        <div v-if="toast.message" class="toast" :class="toast.type">[[ toast.message ]]</div>
+    </script>
+
+    <div id="app"></div>
+
+    <script>
+        window.__APP_INIT__ = {
+            view: "{{ if .InitialView }}{{ .InitialView }}{{ else }}desk{{ end }}",
+            decisionId: {{ if .DecisionID }}{{ .DecisionID }}{{ else }}null{{ end }},
+            traceId: {{ if .TraceID }}{{ printf "%q" .TraceID }}{{ else }}null{{ end }},
+            tradeId: {{ if .TradeID }}{{ .TradeID }}{{ else }}null{{ end }},
+            symbol: {{ if .Symbol }}{{ printf "%q" .Symbol }}{{ else }}""{{ end }},
+            selectedSymbols: {{ if .SelectedSymbols }}{{ toJSON .SelectedSymbols }}{{ else }}[]{{ end }},
+            defaultSymbols: {{ toJSON .DefaultSymbols }},
+        };
+    </script>
+    <script src="/static/js/admin-app.js"></script>
+</body>
+</html>

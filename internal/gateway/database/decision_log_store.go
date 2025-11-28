@@ -103,7 +103,9 @@ type LiveOrder struct {
 // LivePosition 记录实盘持仓状态（预留，暂未对外暴露）。
 // LiveDecisionQuery 用于筛选实时日志。
 type LiveDecisionQuery struct {
+	// Symbol 为兼容旧逻辑的单选值；若 Symbols 非空则忽略此字段。
 	Symbol   string
+	Symbols  []string
 	Provider string
 	Stage    string
 	Limit    int
@@ -145,6 +147,9 @@ func (s *DecisionLogStore) Close() error {
 }
 
 func ensureDecisionLogSchema(db *sql.DB) error {
+	if err := migrateLegacyLiveOrders(db); err != nil {
+		return err
+	}
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS live_decision_logs (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -171,7 +176,7 @@ func ensureDecisionLogSchema(db *sql.DB) error {
 			trace_id TEXT
 		);
 		`,
-		`CREATE TABLE IF NOT EXISTS live_orders (
+		`CREATE TABLE IF NOT EXISTS live_order_logs (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			ts INTEGER NOT NULL,
 			symbol TEXT NOT NULL,
@@ -193,6 +198,73 @@ func ensureDecisionLogSchema(db *sql.DB) error {
 			created_at INTEGER NOT NULL
 		);
 		`,
+		`CREATE TABLE IF NOT EXISTS live_orders (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			freqtrade_id INTEGER NOT NULL UNIQUE,
+			symbol TEXT NOT NULL,
+			side TEXT NOT NULL,
+			amount REAL NOT NULL DEFAULT 0,
+			initial_amount REAL NOT NULL DEFAULT 0,
+			stake_amount REAL NOT NULL DEFAULT 0,
+			leverage REAL NOT NULL DEFAULT 1,
+			position_value REAL NOT NULL DEFAULT 0,
+			price REAL NOT NULL DEFAULT 0,
+			closed_amount REAL NOT NULL DEFAULT 0,
+			is_simulated INTEGER NOT NULL DEFAULT 0,
+			status INTEGER NOT NULL,
+			start_timestamp INTEGER NOT NULL,
+			end_timestamp INTEGER,
+			raw_data TEXT,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		);
+		`,
+		`CREATE TABLE IF NOT EXISTS live_tiers (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			freqtrade_id INTEGER NOT NULL UNIQUE,
+			symbol TEXT NOT NULL,
+			take_profit REAL NOT NULL DEFAULT 0,
+			stop_loss REAL NOT NULL DEFAULT 0,
+			tier1 REAL NOT NULL DEFAULT 0,
+			tier1_ratio REAL NOT NULL DEFAULT 0,
+			tier1_done INTEGER NOT NULL DEFAULT 0,
+			tier2 REAL NOT NULL DEFAULT 0,
+			tier2_ratio REAL NOT NULL DEFAULT 0,
+			tier2_done INTEGER NOT NULL DEFAULT 0,
+			tier3 REAL NOT NULL DEFAULT 0,
+			tier3_ratio REAL NOT NULL DEFAULT 0,
+			tier3_done INTEGER NOT NULL DEFAULT 0,
+			remaining_ratio REAL NOT NULL DEFAULT 1,
+			status INTEGER NOT NULL,
+			source TEXT,
+			reason TEXT,
+			tier_notes TEXT,
+			is_placeholder INTEGER NOT NULL DEFAULT 0,
+			timestamp INTEGER NOT NULL DEFAULT 0,
+			updated_at INTEGER NOT NULL,
+			created_at INTEGER NOT NULL
+		);
+		`,
+		`CREATE TABLE IF NOT EXISTS live_modification_log (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			freqtrade_id INTEGER NOT NULL,
+			field_modified INTEGER NOT NULL,
+			old_value TEXT,
+			new_value TEXT,
+			source INTEGER NOT NULL,
+			reason TEXT,
+			timestamp INTEGER NOT NULL
+		);
+		`,
+		`CREATE TABLE IF NOT EXISTS trade_operation_log (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			freqtrade_id INTEGER NOT NULL,
+			symbol TEXT NOT NULL,
+			operation INTEGER NOT NULL,
+			details TEXT NOT NULL,
+			timestamp INTEGER NOT NULL
+		);
+		`,
 		`CREATE TABLE IF NOT EXISTS last_decisions (
 			symbol TEXT PRIMARY KEY,
 			horizon TEXT,
@@ -204,8 +276,13 @@ func ensureDecisionLogSchema(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_live_logs_ts ON live_decision_logs(ts);`,
 		`CREATE INDEX IF NOT EXISTS idx_live_logs_provider ON live_decision_logs(provider_id);`,
 		`CREATE INDEX IF NOT EXISTS idx_live_logs_symbol ON live_decision_logs(symbols);`,
+		`CREATE INDEX IF NOT EXISTS idx_live_order_logs_symbol ON live_order_logs(symbol);`,
+		`CREATE INDEX IF NOT EXISTS idx_live_order_logs_ts ON live_order_logs(ts);`,
 		`CREATE INDEX IF NOT EXISTS idx_live_orders_symbol ON live_orders(symbol);`,
-		`CREATE INDEX IF NOT EXISTS idx_live_orders_ts ON live_orders(ts);`,
+		`CREATE INDEX IF NOT EXISTS idx_live_orders_status ON live_orders(status);`,
+		`CREATE INDEX IF NOT EXISTS idx_live_tiers_freqtrade ON live_tiers(freqtrade_id);`,
+		`CREATE INDEX IF NOT EXISTS idx_live_mod_log_freqtrade ON live_modification_log(freqtrade_id);`,
+		`CREATE INDEX IF NOT EXISTS idx_trade_operation_freqtrade ON trade_operation_log(freqtrade_id);`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.Exec(stmt); err != nil {
@@ -226,16 +303,19 @@ func ensureDecisionLogColumns(db *sql.DB) error {
 		{"live_decision_logs", "images_json", "TEXT"},
 		{"live_decision_logs", "vision_supported", "INTEGER"},
 		{"live_decision_logs", "image_count", "INTEGER"},
-		{"live_orders", "type", "TEXT"},
-		{"live_orders", "fee", "REAL"},
-		{"live_orders", "timeframe", "TEXT"},
-		{"live_orders", "decided_at", "INTEGER"},
-		{"live_orders", "executed_at", "INTEGER"},
-		{"live_orders", "decision_json", "TEXT"},
-		{"live_orders", "meta_json", "TEXT"},
-		{"live_orders", "take_profit", "REAL"},
-		{"live_orders", "stop_loss", "REAL"},
-		{"live_orders", "expected_rr", "REAL"},
+		{"live_order_logs", "type", "TEXT"},
+		{"live_order_logs", "fee", "REAL"},
+		{"live_order_logs", "timeframe", "TEXT"},
+		{"live_order_logs", "decided_at", "INTEGER"},
+		{"live_order_logs", "executed_at", "INTEGER"},
+		{"live_order_logs", "decision_json", "TEXT"},
+		{"live_order_logs", "meta_json", "TEXT"},
+		{"live_order_logs", "take_profit", "REAL"},
+		{"live_order_logs", "stop_loss", "REAL"},
+		{"live_order_logs", "expected_rr", "REAL"},
+		{"live_orders", "position_value", "REAL NOT NULL DEFAULT 0"},
+		{"live_tiers", "is_placeholder", "INTEGER NOT NULL DEFAULT 0"},
+		{"live_tiers", "timestamp", "INTEGER NOT NULL DEFAULT 0"},
 		{"last_decisions", "horizon", "TEXT"},
 		{"last_decisions", "decisions_json", "TEXT"},
 	}
@@ -245,6 +325,76 @@ func ensureDecisionLogColumns(db *sql.DB) error {
 		}
 	}
 	return nil
+}
+
+func migrateLegacyLiveOrders(db *sql.DB) error {
+	exists, err := tableExists(db, "live_orders")
+	if err != nil || !exists {
+		return err
+	}
+	// 如果已包含新 schema 的列，则无需迁移。
+	hasFreqtrade, err := tableHasColumn(db, "live_orders", "freqtrade_id")
+	if err != nil {
+		return err
+	}
+	if hasFreqtrade {
+		return nil
+	}
+	// 老版本表包含 action 列，迁移成 live_order_logs。
+	hasAction, err := tableHasColumn(db, "live_orders", "action")
+	if err != nil {
+		return err
+	}
+	if !hasAction {
+		return nil
+	}
+	logsExists, err := tableExists(db, "live_order_logs")
+	if err != nil {
+		return err
+	}
+	if logsExists {
+		return nil
+	}
+	_, err = db.Exec(`ALTER TABLE live_orders RENAME TO live_order_logs`)
+	return err
+}
+
+func tableExists(db *sql.DB, table string) (bool, error) {
+	row := db.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`, table)
+	var name string
+	switch err := row.Scan(&name); err {
+	case sql.ErrNoRows:
+		return false, nil
+	case nil:
+		return true, nil
+	default:
+		return false, err
+	}
+}
+
+func tableHasColumn(db *sql.DB, table, column string) (bool, error) {
+	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			cid       int
+			name      string
+			ctype     string
+			notnull   int
+			dfltValue sql.NullString
+			pk        int
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dfltValue, &pk); err != nil {
+			return false, err
+		}
+		if strings.EqualFold(name, column) {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }
 
 func addColumnIfMissing(db *sql.DB, table, column, typ string) error {
@@ -338,28 +488,10 @@ func (s *DecisionLogStore) Insert(ctx context.Context, rec DecisionLogRecord) (i
 	return id, nil
 }
 
-// ListDecisions 返回最新的实时决策日志，支持按 provider/stage/symbol 过滤。
-func (s *DecisionLogStore) ListDecisions(ctx context.Context, q LiveDecisionQuery) ([]DecisionLogRecord, error) {
-	s.mu.Lock()
-	db := s.db
-	s.mu.Unlock()
-	if db == nil {
-		return nil, fmt.Errorf("decision log store 未初始化")
-	}
-	limit := q.Limit
-	if limit <= 0 || limit > 500 {
-		limit = 100
-	}
-	offset := q.Offset
-	if offset < 0 {
-		offset = 0
-	}
+func buildLiveDecisionFilter(q LiveDecisionQuery) (string, []interface{}) {
 	var args []interface{}
 	var sb strings.Builder
-	sb.WriteString(`SELECT id, trace_id, ts, candidates, timeframes, horizon, provider_id, stage,
-		system_prompt, user_prompt, raw_output, raw_json, meta_summary, decisions_json,
-		positions_json, symbols, images_json, vision_supported, image_count, error, note
-		FROM live_decision_logs WHERE 1=1`)
+	sb.WriteString(" WHERE 1=1")
 	if q.Provider != "" {
 		sb.WriteString(" AND provider_id=?")
 		args = append(args, q.Provider)
@@ -377,10 +509,116 @@ func (s *DecisionLogStore) ListDecisions(ctx context.Context, q LiveDecisionQuer
 		sb.WriteString(" AND stage=?")
 		args = append(args, stage)
 	}
-	if strings.TrimSpace(q.Symbol) != "" {
-		sb.WriteString(" AND symbols LIKE ?")
-		args = append(args, symbolLikePattern(q.Symbol))
+	symbols := normalizeSymbols(q.Symbols)
+	if len(symbols) == 0 && strings.TrimSpace(q.Symbol) != "" {
+		symbols = []string{strings.ToUpper(strings.TrimSpace(q.Symbol))}
 	}
+	if len(symbols) > 0 {
+		sb.WriteString(" AND (")
+		for i, sym := range symbols {
+			if i > 0 {
+				sb.WriteString(" OR ")
+			}
+			sb.WriteString("symbols LIKE ?")
+			args = append(args, symbolLikePattern(sym))
+		}
+		sb.WriteString(")")
+	}
+	return sb.String(), args
+}
+
+type rowScanner interface {
+	Scan(dest ...interface{}) error
+}
+
+func scanDecisionLogRecord(scanner rowScanner) (DecisionLogRecord, error) {
+	var (
+		rec        DecisionLogRecord
+		candidates sql.NullString
+		timeframes sql.NullString
+		decisions  sql.NullString
+		positions  sql.NullString
+		symbols    sql.NullString
+		images     sql.NullString
+		vision     sql.NullInt64
+		imageCount sql.NullInt64
+		system     sql.NullString
+		user       sql.NullString
+		rawOut     sql.NullString
+		rawJSON    sql.NullString
+		meta       sql.NullString
+		errorStr   sql.NullString
+		noteStr    sql.NullString
+	)
+	if err := scanner.Scan(&rec.ID, &rec.TraceID, &rec.Timestamp, &candidates, &timeframes, &rec.Horizon,
+		&rec.ProviderID, &rec.Stage, &system, &user, &rawOut, &rawJSON, &meta,
+		&decisions, &positions, &symbols, &images, &vision, &imageCount, &errorStr, &noteStr); err != nil {
+		return rec, err
+	}
+	rec.System = system.String
+	rec.User = user.String
+	rec.RawOutput = rawOut.String
+	rec.RawJSON = rawJSON.String
+	rec.Meta = meta.String
+	rec.Error = errorStr.String
+	rec.Note = noteStr.String
+	rec.Candidates = decodeStringArray(candidates.String)
+	rec.Timeframes = decodeStringArray(timeframes.String)
+	rec.Decisions = decodeDecisionArray(decisions.String)
+	rec.Positions = decodePositionArray(positions.String)
+	rec.Symbols = decodeSymbolBlob(symbols.String)
+	rec.Images = decodeImageArray(images.String)
+	rec.VisionSupported = nullIntToBool(vision)
+	if imageCount.Valid {
+		rec.ImageCount = int(imageCount.Int64)
+	} else if len(rec.Images) > 0 {
+		rec.ImageCount = len(rec.Images)
+	}
+	return rec, nil
+}
+
+// GetDecision 根据主键 ID 返回单条实时决策记录。
+func (s *DecisionLogStore) GetDecision(ctx context.Context, id int64) (DecisionLogRecord, error) {
+	var rec DecisionLogRecord
+	if id <= 0 {
+		return rec, fmt.Errorf("invalid decision id")
+	}
+	s.mu.Lock()
+	db := s.db
+	s.mu.Unlock()
+	if db == nil {
+		return rec, fmt.Errorf("decision log store 未初始化")
+	}
+	row := db.QueryRowContext(ctx, `SELECT id, trace_id, ts, candidates, timeframes, horizon, provider_id, stage,
+		system_prompt, user_prompt, raw_output, raw_json, meta_summary, decisions_json,
+		positions_json, symbols, images_json, vision_supported, image_count, error, note
+		FROM live_decision_logs WHERE id = ?`, id)
+	return scanDecisionLogRecord(row)
+}
+
+// ListDecisions 返回最新的实时决策日志，支持按 provider/stage/symbol 过滤。
+func (s *DecisionLogStore) ListDecisions(ctx context.Context, q LiveDecisionQuery) ([]DecisionLogRecord, error) {
+	s.mu.Lock()
+	db := s.db
+	s.mu.Unlock()
+	if db == nil {
+		return nil, fmt.Errorf("decision log store 未初始化")
+	}
+	limit := q.Limit
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	offset := q.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	filterSQL, args := buildLiveDecisionFilter(q)
+	var sb strings.Builder
+	sb.WriteString(`SELECT id, trace_id, ts, candidates, timeframes, horizon, provider_id, stage,
+		system_prompt, user_prompt, raw_output, raw_json, meta_summary, decisions_json,
+		positions_json, symbols, images_json, vision_supported, image_count, error, note
+		FROM live_decision_logs`)
+	sb.WriteString(filterSQL)
 	sb.WriteString(" ORDER BY ts DESC, id DESC LIMIT ? OFFSET ?")
 	args = append(args, limit, offset)
 	rows, err := db.QueryContext(ctx, sb.String(), args...)
@@ -390,51 +628,109 @@ func (s *DecisionLogStore) ListDecisions(ctx context.Context, q LiveDecisionQuer
 	defer rows.Close()
 	var list []DecisionLogRecord
 	for rows.Next() {
-		var (
-			rec        DecisionLogRecord
-			candidates sql.NullString
-			timeframes sql.NullString
-			decisions  sql.NullString
-			positions  sql.NullString
-			symbols    sql.NullString
-			images     sql.NullString
-			vision     sql.NullInt64
-			imageCount sql.NullInt64
-			system     sql.NullString
-			user       sql.NullString
-			rawOut     sql.NullString
-			rawJSON    sql.NullString
-			meta       sql.NullString
-			errorStr   sql.NullString
-			noteStr    sql.NullString
-		)
-		if err := rows.Scan(&rec.ID, &rec.TraceID, &rec.Timestamp, &candidates, &timeframes, &rec.Horizon,
-			&rec.ProviderID, &rec.Stage, &system, &user, &rawOut, &rawJSON, &meta,
-			&decisions, &positions, &symbols, &images, &vision, &imageCount, &errorStr, &noteStr); err != nil {
+		rec, err := scanDecisionLogRecord(rows)
+		if err != nil {
 			return nil, err
-		}
-		rec.System = system.String
-		rec.User = user.String
-		rec.RawOutput = rawOut.String
-		rec.RawJSON = rawJSON.String
-		rec.Meta = meta.String
-		rec.Error = errorStr.String
-		rec.Note = noteStr.String
-		rec.Candidates = decodeStringArray(candidates.String)
-		rec.Timeframes = decodeStringArray(timeframes.String)
-		rec.Decisions = decodeDecisionArray(decisions.String)
-		rec.Positions = decodePositionArray(positions.String)
-		rec.Symbols = decodeSymbolBlob(symbols.String)
-		rec.Images = decodeImageArray(images.String)
-		rec.VisionSupported = nullIntToBool(vision)
-		if imageCount.Valid {
-			rec.ImageCount = int(imageCount.Int64)
-		} else if len(rec.Images) > 0 {
-			rec.ImageCount = len(rec.Images)
 		}
 		list = append(list, rec)
 	}
 	return list, rows.Err()
+}
+
+// CountDecisions 统计满足筛选条件的决策日志数量。
+func (s *DecisionLogStore) CountDecisions(ctx context.Context, q LiveDecisionQuery) (int, error) {
+	s.mu.Lock()
+	db := s.db
+	s.mu.Unlock()
+	if db == nil {
+		return 0, fmt.Errorf("decision log store 未初始化")
+	}
+	filterSQL, args := buildLiveDecisionFilter(q)
+	var total int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM live_decision_logs`+filterSQL, args...).Scan(&total); err != nil {
+		return 0, err
+	}
+	return total, nil
+}
+
+// ListDecisionsByTraceID 返回同一 trace 下的所有决策步骤，按时间顺序排列。
+func (s *DecisionLogStore) ListDecisionsByTraceID(ctx context.Context, traceID string, limit int) ([]DecisionLogRecord, error) {
+	traceID = strings.TrimSpace(traceID)
+	if traceID == "" {
+		return nil, fmt.Errorf("trace_id 不能为空")
+	}
+	s.mu.Lock()
+	db := s.db
+	s.mu.Unlock()
+	if db == nil {
+		return nil, fmt.Errorf("decision log store 未初始化")
+	}
+	if limit <= 0 || limit > 500 {
+		limit = 200
+	}
+	rows, err := db.QueryContext(ctx, `SELECT id, trace_id, ts, candidates, timeframes, horizon, provider_id, stage,
+		system_prompt, user_prompt, raw_output, raw_json, meta_summary, decisions_json,
+		positions_json, symbols, images_json, vision_supported, image_count, error, note
+		FROM live_decision_logs WHERE trace_id = ?
+		ORDER BY ts ASC, id ASC
+		LIMIT ?`, traceID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var list []DecisionLogRecord
+	for rows.Next() {
+		rec, err := scanDecisionLogRecord(rows)
+		if err != nil {
+			return nil, err
+		}
+		list = append(list, rec)
+	}
+	return list, rows.Err()
+}
+
+// ListDecisionsByTraceIDs 在单次查询中取回多个 trace 的日志，按 trace/时间排序。
+func (s *DecisionLogStore) ListDecisionsByTraceIDs(ctx context.Context, traceIDs []string) (map[string][]DecisionLogRecord, error) {
+	clean := normalizeTraceIDs(traceIDs)
+	if len(clean) == 0 {
+		return map[string][]DecisionLogRecord{}, nil
+	}
+	s.mu.Lock()
+	db := s.db
+	s.mu.Unlock()
+	if db == nil {
+		return nil, fmt.Errorf("decision log store 未初始化")
+	}
+	var placeholders []string
+	args := make([]interface{}, 0, len(clean))
+	for _, id := range clean {
+		placeholders = append(placeholders, "?")
+		args = append(args, id)
+	}
+	query := fmt.Sprintf(`SELECT id, trace_id, ts, candidates, timeframes, horizon, provider_id, stage,
+		system_prompt, user_prompt, raw_output, raw_json, meta_summary, decisions_json,
+		positions_json, symbols, images_json, vision_supported, image_count, error, note
+		FROM live_decision_logs
+		WHERE trace_id IN (%s)
+		ORDER BY trace_id ASC, ts ASC, id ASC`, strings.Join(placeholders, ","))
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make(map[string][]DecisionLogRecord, len(clean))
+	for rows.Next() {
+		rec, err := scanDecisionLogRecord(rows)
+		if err != nil {
+			return nil, err
+		}
+		key := strings.TrimSpace(rec.TraceID)
+		if key == "" {
+			key = deriveLegacyTraceKey(rec, int(rec.ID))
+		}
+		result[key] = append(result[key], rec)
+	}
+	return result, rows.Err()
 }
 
 // DecisionLogObserver 实现 decision.DecisionObserver，将 trace 写入 SQLite。
@@ -554,10 +850,7 @@ func BuildLiveDecisionTraces(records []DecisionLogRecord) []LiveDecisionTrace {
 	groups := make(map[string]*builder)
 	var orderKeys []string
 	for idx, rec := range records {
-		key := strings.TrimSpace(rec.TraceID)
-		if key == "" {
-			key = fmt.Sprintf("legacy-%d-%s-%s-%d", rec.Timestamp, rec.Horizon, strings.Join(rec.Symbols, "|"), idx)
-		}
+		key := canonicalTraceKey(rec, idx)
 		b := groups[key]
 		if b == nil {
 			trace := LiveDecisionTrace{
@@ -614,6 +907,110 @@ func BuildLiveDecisionTraces(records []DecisionLogRecord) []LiveDecisionTrace {
 	out := make([]LiveDecisionTrace, len(orderKeys))
 	for i, key := range orderKeys {
 		out[i] = groups[key].trace
+	}
+	return out
+}
+
+func canonicalTraceKey(rec DecisionLogRecord, idx int) string {
+	key := strings.TrimSpace(rec.TraceID)
+	if key != "" {
+		return key
+	}
+	return deriveLegacyTraceKey(rec, idx)
+}
+
+func deriveLegacyTraceKey(rec DecisionLogRecord, idx int) string {
+	suffix := idx
+	if suffix <= 0 {
+		suffix = int(rec.ID)
+	}
+	symbolBlob := strings.Join(rec.Symbols, "|")
+	if symbolBlob == "" {
+		symbolBlob = "unknown"
+	}
+	return fmt.Sprintf("legacy-%d-%s-%s-%d", rec.Timestamp, rec.Horizon, symbolBlob, suffix)
+}
+
+// DecisionRoundSummary 汇总一次决策轮次的关键指标，供前端列表展示。
+type DecisionRoundSummary struct {
+	TraceID       string              `json:"trace_id"`
+	RoundKey      string              `json:"round_key"`
+	StartedAt     int64               `json:"started_at"`
+	CompletedAt   int64               `json:"completed_at"`
+	Horizon       string              `json:"horizon"`
+	Symbols       []string            `json:"symbols"`
+	Candidates    []string            `json:"candidates"`
+	Timeframes    []string            `json:"timeframes"`
+	TotalSteps    int                 `json:"total_steps"`
+	ProviderSteps int                 `json:"provider_steps"`
+	AgentSteps    int                 `json:"agent_steps"`
+	ErrorSteps    int                 `json:"error_steps"`
+	ProviderIDs   []string            `json:"provider_ids"`
+	FinalDecision DecisionLogRecord   `json:"final_decision"`
+	Steps         []DecisionLogRecord `json:"steps,omitempty"`
+}
+
+// BuildDecisionRoundSummaries 根据 final 记录与 trace 下的全量日志在 Go 层聚合出轮次摘要。
+func BuildDecisionRoundSummaries(finals []DecisionLogRecord, traceLogs map[string][]DecisionLogRecord) []DecisionRoundSummary {
+	if len(finals) == 0 {
+		return nil
+	}
+	out := make([]DecisionRoundSummary, 0, len(finals))
+	for _, final := range finals {
+		trimmedTrace := strings.TrimSpace(final.TraceID)
+		steps := traceLogs[trimmedTrace]
+		if len(steps) == 0 {
+			steps = []DecisionLogRecord{final}
+		}
+		summary := DecisionRoundSummary{
+			TraceID:       trimmedTrace,
+			RoundKey:      canonicalTraceKey(final, int(final.ID)),
+			StartedAt:     final.Timestamp,
+			CompletedAt:   final.Timestamp,
+			Horizon:       final.Horizon,
+			Symbols:       cloneStrings(final.Symbols),
+			Candidates:    cloneStrings(final.Candidates),
+			Timeframes:    cloneStrings(final.Timeframes),
+			FinalDecision: final,
+		}
+		providerSet := make(map[string]struct{})
+		for _, step := range steps {
+			if step.Timestamp < summary.StartedAt {
+				summary.StartedAt = step.Timestamp
+			}
+			if step.Timestamp > summary.CompletedAt {
+				summary.CompletedAt = step.Timestamp
+			}
+			if len(step.Symbols) > 0 {
+				summary.Symbols = mergeSymbolLists(summary.Symbols, step.Symbols)
+			}
+			stage := strings.ToLower(strings.TrimSpace(step.Stage))
+			switch {
+			case stage == "provider":
+				summary.ProviderSteps++
+			case strings.HasPrefix(stage, "agent:"):
+				summary.AgentSteps++
+			}
+			if strings.TrimSpace(step.Error) != "" {
+				summary.ErrorSteps++
+			}
+			if pid := strings.TrimSpace(step.ProviderID); pid != "" {
+				if _, ok := providerSet[pid]; !ok {
+					providerSet[pid] = struct{}{}
+					summary.ProviderIDs = append(summary.ProviderIDs, pid)
+				}
+			}
+		}
+		summary.TotalSteps = len(steps)
+		if summary.ProviderSteps == 0 && strings.TrimSpace(final.Stage) == "provider" {
+			summary.ProviderSteps = 1
+		}
+		if len(steps) > 0 {
+			copied := make([]DecisionLogRecord, len(steps))
+			copy(copied, steps)
+			summary.Steps = copied
+		}
+		out = append(out, summary)
 	}
 	return out
 }
@@ -817,6 +1214,46 @@ func symbolLikePattern(sym string) string {
 		return "%"
 	}
 	return "%|" + sym + "|%"
+}
+
+func normalizeSymbols(symbols []string) []string {
+	if len(symbols) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	var out []string
+	for _, sym := range symbols {
+		s := strings.ToUpper(strings.TrimSpace(sym))
+		if s == "" {
+			continue
+		}
+		if _, ok := seen[s]; ok {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+	return out
+}
+
+func normalizeTraceIDs(ids []string) []string {
+	if len(ids) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	var out []string
+	for _, id := range ids {
+		trimmed := strings.TrimSpace(id)
+		if trimmed == "" {
+			continue
+		}
+		if _, ok := seen[trimmed]; ok {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		out = append(out, trimmed)
+	}
+	return out
 }
 
 func attachmentsFromProviderImages(images []provider.ImagePayload) []ImageAttachment {

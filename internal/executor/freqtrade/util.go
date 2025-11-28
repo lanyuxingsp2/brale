@@ -1,6 +1,7 @@
 package freqtrade
 
 import (
+	"math"
 	"strings"
 	"time"
 )
@@ -101,6 +102,11 @@ func firstNonZero(vals ...float64) float64 {
 		}
 	}
 	return 0
+}
+
+func floatEqual(a, b float64) bool {
+	const eps = 1e-9
+	return math.Abs(a-b) < eps
 }
 
 func freqtradeAction(side string, closing bool) string {

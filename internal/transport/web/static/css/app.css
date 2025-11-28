@@ -1,0 +1,177 @@
+/* 全局背景与字体 */
+body {
+    font-family: 'EB Garamond', 'Noto Serif SC', serif;
+    background-color: #e8e0d5;
+    /* 噪点背景纹理 */
+    background-image: url("data:image/svg+xml,%3Csvg width='100' height='100' viewBox='0 0 100 100' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100' height='100' filter='url(%23noiseFilter)' opacity='0.05'/%3E%3C/svg%3E");
+    color: #2c3e50;
+    overflow-x: hidden;
+}
+
+.title-shadow {
+    text-shadow: 2px 2px 0px #cbd5e1;
+}
+
+.perspective-1000 {
+    perspective: 1000px;
+}
+
+/* 书本通用样式 */
+.sketchy-book {
+    background: #fffefc;
+    border-radius: 3px 8px 5px 4px / 4px 6px 3px 5px;
+    box-shadow: 
+        12px 12px 0px rgba(0,0,0,0.1), 
+        inset 0 0 20px rgba(0,0,0,0.02);
+    position: relative;
+    transition: all 0.3s ease;
+    border: 2px solid #475569;
+}
+
+.sketchy-book:hover {
+    box-shadow: 
+        15px 15px 0px rgba(0,0,0,0.15), 
+        inset 0 0 20px rgba(0,0,0,0.02);
+    transform: translateY(-2px);
+}
+
+/* 书签动画 */
+@keyframes sway {
+    0% { transform: rotate(0deg); }
+    25% { transform: rotate(2deg); }
+    75% { transform: rotate(-2deg); }
+    100% { transform: rotate(0deg); }
+}
+
+.bookmark-sway {
+    transform-origin: top center;
+    animation: sway 4s ease-in-out infinite;
+}
+
+/* 装饰性分割线 */
+.ornament-divider {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 1.5rem 0;
+    color: currentColor;
+    opacity: 0.4;
+}
+.ornament-divider::before, .ornament-divider::after {
+    content: '';
+    flex: 1;
+    border-bottom: 1px solid currentColor;
+    margin: 0 10px;
+}
+.ornament-divider::before { margin-right: 15px; }
+.ornament-divider::after { margin-left: 15px; }
+.ornament-content {
+    font-family: 'Great Vibes', cursive;
+    font-size: 1.5rem;
+}
+
+
+/* 蓝书定制 */
+.book-blue {
+     border-color: #1e3a8a;
+     border-left-width: 12px; /* 书脊更明显 */
+     background: linear-gradient(to right, #e0f2fe 0%, #fffefc 8%, #fffefc 100%);
+}
+.book-blue::before {
+    content: ''; position: absolute; left: -8px; top: 5%; bottom: 5%; width: 4px; background: #60a5fa; opacity: 0.5; border-radius: 2px;
+}
+
+/* 红书定制 */
+.book-red {
+     border-color: #991b1b;
+     border-right-width: 12px;
+     background: linear-gradient(to left, #fee2e2 0%, #fffefc 8%, #fffefc 100%);
+}
+.book-red::after {
+     content: ''; position: absolute; right: -8px; top: 5%; bottom: 5%; width: 4px; background: #f87171; opacity: 0.5; border-radius: 2px;
+}
+
+/* 目录条目样式 */
+.toc-item {
+    display: flex;
+    align-items: baseline;
+    padding: 1rem 0.5rem;
+    border-bottom: 1px dashed #cbd5e1;
+    cursor: pointer;
+    transition: all 0.2s;
+    border-radius: 4px;
+}
+.toc-item:hover {
+    background-color: rgba(0,0,0,0.03);
+}
+.toc-title {
+    font-weight: 600;
+    font-size: 1.1rem;
+    position: relative;
+}
+.toc-leader {
+    flex: 1;
+    margin: 0 1rem;
+    border-bottom: 2px dotted #94a3b8;
+    opacity: 0.6;
+}
+.toc-page {
+    font-family: 'Fira Code', monospace;
+    font-size: 0.9rem;
+    color: #64748b;
+}
+
+/* 模态框 3D 效果 */
+#modal-perspective {
+    perspective: 2500px;
+}
+
+#central-book-modal {
+    /* 初始状态：旋转并缩小，模拟书合上的样子 */
+    transform: rotateY(-15deg) scale(0.95);
+    transform-origin: center center;
+    opacity: 0;
+    transition: all 0.6s cubic-bezier(0.34, 1.56, 0.64, 1); /* 弹性动画 */
+
+    background: #fffefc;
+    border: 4px solid #475569;
+    border-radius: 5px 15px 5px 15px / 15px 5px 15px 5px;
+    /* 这里的 box-shadow 需要配合边框颜色 */
+}
+
+#central-book-modal.active {
+    transform: rotateY(0deg) scale(1);
+    opacity: 1;
+}
+
+/* 书中缝阴影 */
+.central-gutter {
+    background: linear-gradient(to right, 
+        rgba(0,0,0,0.05) 0%, 
+        rgba(0,0,0,0.15) 40%, 
+        rgba(0,0,0,0.2) 50%, 
+        rgba(0,0,0,0.15) 60%, 
+        rgba(0,0,0,0.05) 100%
+    );
+    box-shadow: inset 0 0 10px rgba(0,0,0,0.05);
+}
+
+/* 模拟纸张质感 */
+#book-content-left, #book-content-right {
+    min-height: 100%;
+}
+
+/* 滚动条美化 */
+::-webkit-scrollbar {
+    width: 8px;
+}
+::-webkit-scrollbar-track {
+    background: transparent; 
+}
+::-webkit-scrollbar-thumb {
+    background: #cbd5e1; 
+    border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+    background: #94a3b8; 
+}

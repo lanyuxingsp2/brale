@@ -39,7 +39,7 @@ func (s *DecisionLogStore) RecordOrder(ctx context.Context, order *market.Order)
 	decisionStr := nullIfEmptyJSON(order.Decision)
 	metaStr := nullIfEmptyJSON(order.Meta)
 	res, err := db.ExecContext(ctx, `
-		INSERT INTO live_orders
+		INSERT INTO live_order_logs
 			(ts, symbol, action, side, type, price, quantity, notional, fee, timeframe,
 			 decided_at, executed_at, decision_json, meta_json, take_profit, stop_loss, expected_rr, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -67,7 +67,7 @@ func (s *DecisionLogStore) ListOrders(ctx context.Context, symbol string, limit 
 	args := []interface{}{limit}
 	query := `SELECT id, symbol, action, side, type, price, quantity, notional, fee, timeframe,
 		decided_at, executed_at, decision_json, meta_json, take_profit, stop_loss, expected_rr
-		FROM live_orders`
+		FROM live_order_logs`
 	if sym := strings.TrimSpace(symbol); sym != "" {
 		query += " WHERE symbol = ?"
 		args = append([]interface{}{strings.ToUpper(sym)}, args...)

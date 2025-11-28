@@ -144,7 +144,10 @@ func NewApp(cfg *brcfg.Config) (*App, error) {
 	// 聚合器
 	var aggregator decision.Aggregator = decision.FirstWinsAggregator{}
 	if cfg.AI.Aggregation == "meta" {
-		aggregator = decision.MetaAggregator{Weights: cfg.AI.Weights}
+		aggregator = decision.MetaAggregator{
+			Weights:    cfg.AI.Weights,
+			Preference: cfg.AI.ProviderPreference,
+		}
 	}
 
 	// 引擎
@@ -158,6 +161,7 @@ func NewApp(cfg *brcfg.Config) (*App, error) {
 		Horizon:               horizon,
 		HorizonName:           cfg.AI.ActiveHorizon,
 		MultiAgent:            cfg.AI.MultiAgent,
+		ProviderPreference:    cfg.AI.ProviderPreference,
 		Parallel:              true,
 		LogEachModel:          cfg.AI.LogEachModel,
 		DebugStructuredBlocks: cfg.AI.LogEachModel,
@@ -221,11 +225,6 @@ func NewApp(cfg *brcfg.Config) (*App, error) {
 		}
 		logger.Infof("✓ Freqtrade 执行器已启用: %s", cfg.Freqtrade.APIURL)
 		freqManager = freqexec.NewManager(client, cfg.Freqtrade, cfg.AI.ActiveHorizon, decisionStore, orderRecorder, tg)
-		if synced, err := freqManager.SyncOpenPositions(ctx); err != nil {
-			logger.Warnf("同步 freqtrade 持仓失败: %v", err)
-		} else if synced > 0 {
-			logger.Infof("✓ 已同步 %d 个 freqtrade 在途仓位", synced)
-		}
 	}
 
 	liveSvc := &LiveService{
@@ -258,10 +257,19 @@ func NewApp(cfg *brcfg.Config) (*App, error) {
 	}
 	if decisionStore != nil || freqManager != nil {
 		var err error
+		logPaths := map[string]string{}
+		if path := strings.TrimSpace(cfg.App.LogPath); path != "" {
+			logPaths["app"] = path
+		}
+		if path := strings.TrimSpace(cfg.App.LLMLog); path != "" {
+			logPaths["llm"] = path
+		}
 		liveHTTPServe, err = livehttp.NewServer(livehttp.ServerConfig{
 			Addr:             cfg.App.HTTPAddr,
 			Logs:             decisionStore,
 			FreqtradeHandler: freqHandler,
+			DefaultSymbols:   syms,
+			LogPaths:         logPaths,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("初始化 live HTTP 失败: %w", err)

@@ -26,24 +26,33 @@ Brale 是一个以 AI 决策为核心的多 Agent 量化策略工具。系统会
 - [QuantAgent Prompting](https://github.com/Y-Research-SBU/QuantAgent.git)：多模态指标→形态→趋势聚合的提示链条。
 - [freqtrade/freqtrade](https://github.com/freqtrade/freqtrade)：成熟的开源 CTA 执行引擎，Brale 通过共享策略 `configs/user_data/brale_shared_strategy.py` 与其对接。
 
-## Docker 快速启动
-1. 准备配置：
+## 快速启动（Docker）
+1. 准备配置  
    ```bash
    cp configs/config.example.toml configs/config.toml
-   # 按需填入 API Key、交易对、agent/LLM provider 配置
-   mkdir -p data/freqtrade/user_data
+   cp configs/user_data/freqtrade-config.example.json configs/user_data/freqtrade-config.json
+   # 按需填写 API/密钥、交易对等
    ```
-   `configs/user_data/freqtrade-config.json` 与 `brale_shared_strategy.py` 会在 Compose 中以只读挂载方式注入，无需再复制。
-2. 构建镜像并启动：
+2. 准备运行目录并复制 freqtrade 配置/策略  
    ```bash
-   docker compose up --build -d
+   make prepare-dirs
    ```
-   该命令会拉起两个服务：`brale`（Go 应用）与 `freqtrade`（执行引擎）。`BRALE_CONFIG` 默认指向 `/app/configs/config.toml`，并通过 `FREQTRADE_API_URL` 与 Freqtrade RPC 对接。
-3. 查看日志与健康状态：
+3. 启动服务（建议先 freqtrade，再 brale）  
    ```bash
+   BRALE_DATA_ROOT=running_log/brale_data FREQTRADE_USERDATA_ROOT=running_log/freqtrade_data docker compose up -d freqtrade
+   # 等待 freqtrade 就绪（约 10 秒）
+   BRALE_DATA_ROOT=running_log/brale_data FREQTRADE_USERDATA_ROOT=running_log/freqtrade_data docker compose up -d brale
+   ```
+   也可一键执行 `scripts/quickstart.sh`（会自动复制配置、make prepare-dirs，并按顺序启动 freqtrade→brale）。
+4. 查看日志与健康检查  
+   ```bash
+   docker compose logs -f freqtrade
    docker compose logs -f brale
    curl http://localhost:9991/healthz
    ```
-4. 首次运行会在 `data/freqtrade/user_data` 里生成日志、SQLite 交易数据库，可持久化策略表现。若需停止服务，执行 `docker compose down`。
+5. 本地调试（可选）  
+   ```bash
+   make build
+   BRALE_CONFIG=./configs/config.toml make run
+   ```
 
-> 若希望在本地调试单独的 Go 程序，也可以按照仓库根目录的 `Makefile`：`make tidy && make build && BRALE_CONFIG=./configs/config.toml make run`。

@@ -113,6 +113,8 @@ type Trade struct {
 	CloseDate    string  `json:"close_date"`
 	OpenRate     float64 `json:"open_rate"`
 	CloseRate    float64 `json:"close_rate"`
+	TakeProfit   float64 `json:"take_profit,omitempty"`
+	StopLoss     float64 `json:"stop_loss,omitempty"`
 	Amount       float64 `json:"amount"`
 	StakeAmount  float64 `json:"stake_amount"`
 	Leverage     float64 `json:"leverage"`

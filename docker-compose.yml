@@ -12,7 +12,7 @@ services:
       - "9991:9991"
     volumes:
       - type: bind
-        source: ./data/brale
+        source: ${BRALE_DATA_ROOT:-./running_log/brale_data}
         target: /data
       - type: bind
         source: ./configs
@@ -25,24 +25,19 @@ services:
 
   freqtrade:
     image: freqtradeorg/freqtrade:stable
-    command: >
-      trade
-      --logfile /freqtrade/user_data/logs/freqtrade.log
-      --db-url sqlite:////freqtrade/user_data/tradesv3.sqlite
-      --config /freqtrade/user_data/config.json
-      --strategy BraleSharedStrategy
+    command:
+      - "trade"
+      - "--logfile"
+      - "/freqtrade/user_data/logs/freqtrade.log"
+      - "--db-url"
+      - "sqlite:////freqtrade/user_data/tradesv3.sqlite"
+      - "--config"
+      - "/freqtrade/user_data/config.json"
+      - "--strategy"
+      - "BraleSharedStrategy"
     ports:
       - "8080:8080"
     volumes:
-      - freqtrade-user-data:/freqtrade/user_data
       - type: bind
-        source: ./configs/user_data/freqtrade-config.json
-        target: /freqtrade/user_data/config.json
-        read_only: true
-      - type: bind
-        source: ./configs/user_data/brale_shared_strategy.py
-        target: /freqtrade/user_data/strategies/brale_shared_strategy.py
-        read_only: true
-
-volumes:
-  freqtrade-user-data:
+        source: ${FREQTRADE_USERDATA_ROOT:-./running_log/freqtrade_data}
+        target: /freqtrade/user_data

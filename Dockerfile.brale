@@ -7,14 +7,19 @@ COPY . .
 RUN CGO_ENABLED=1 GOOS=linux go build -buildvcs=false -o /usr/local/bin/brale ./cmd/brale
 
 FROM debian:bookworm-slim
+ARG INSTALL_HEADLESS=false
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates tzdata wget gnupg \
-    && wget -q -O - https://dl.google.com/linux/linux_signing_key.pub \
-        | gpg --dearmor -o /usr/share/keyrings/google-linux.gpg \
-    && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-linux.gpg] http://dl.google.com/linux/chrome/deb/ stable main" \
-        > /etc/apt/sources.list.d/google-chrome.list \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends google-chrome-stable \
+    && if [ "$INSTALL_HEADLESS" = "true" ]; then \
+        wget -q -O - https://dl.google.com/linux/linux_signing_key.pub \
+            | gpg --dearmor -o /usr/share/keyrings/google-linux.gpg && \
+        echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-linux.gpg] http://dl.google.com/linux/chrome/deb/ stable main" \
+            > /etc/apt/sources.list.d/google-chrome.list && \
+        apt-get update && \
+        apt-get install -y --no-install-recommends google-chrome-stable ; \
+    else \
+        echo "Skip headless Chrome installation (INSTALL_HEADLESS=$INSTALL_HEADLESS)"; \
+    fi \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=build /usr/local/bin/brale /usr/local/bin/brale

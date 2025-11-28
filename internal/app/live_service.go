@@ -174,6 +174,7 @@ func (s *LiveService) Close() {
 
 func (s *LiveService) tickDecision(ctx context.Context) error {
 	cfg := s.cfg
+	start := time.Now()
 	input := decision.Context{Candidates: s.symbols}
 	input.Account = s.accountSnapshot()
 	if exp, ok := s.ks.(store.SnapshotExporter); ok {
@@ -197,6 +198,7 @@ func (s *LiveService) tickDecision(ctx context.Context) error {
 	positions := s.livePositions(input.Account)
 	input.Positions = positions
 	hasPositions := len(positions) > 0
+	logger.Infof("AI 决策循环开始 candidates=%d positions=%d", len(input.Candidates), len(positions))
 	if !hasPositions {
 		if s.lastDec != nil {
 			s.lastDec.Reset()
@@ -215,7 +217,7 @@ func (s *LiveService) tickDecision(ctx context.Context) error {
 	}
 	traceID := s.ensureTraceID(res.TraceID)
 	if len(res.Decisions) == 0 {
-		logger.Infof("AI 决策为空（观望）")
+		logger.Infof("AI 决策为空（观望） trace=%s 耗时=%s", traceID, time.Since(start))
 		return nil
 	}
 	if res.RawOutput != "" {
@@ -310,6 +312,7 @@ func (s *LiveService) tickDecision(ctx context.Context) error {
 			s.lastRawJSON = string(buf)
 		}
 	}
+	logger.Infof("AI 决策循环结束 trace=%s 原始=%d 接受=%d 耗时=%s", traceID, len(res.Decisions), len(accepted), time.Since(start))
 	return nil
 }
 
@@ -557,21 +560,13 @@ func (s *LiveService) livePositions(account decision.AccountSnapshot) []decision
 		return nil
 	}
 	total := account.Total
-	if total <= 0 {
-		total = s.cfg.Trading.StaticBalance
-	}
 	for i := range positions {
-		val := positions[i].PositionValue
-		if val <= 0 {
-			if positions[i].Stake > 0 {
-				val = positions[i].Stake
-			} else if positions[i].Quantity > 0 && positions[i].CurrentPrice > 0 {
-				val = positions[i].Quantity * positions[i].CurrentPrice
-			}
+		stake := positions[i].Stake
+		if stake <= 0 && positions[i].Quantity > 0 && positions[i].EntryPrice > 0 {
+			stake = positions[i].Quantity * positions[i].EntryPrice / positions[i].Leverage
 		}
-		positions[i].PositionValue = val
-		if total > 0 && val > 0 {
-			positions[i].AccountRatio = val / total
+		if total > 0 && stake > 0 {
+			positions[i].AccountRatio = stake / total
 		}
 	}
 	return positions
@@ -662,14 +657,14 @@ func (s *LiveService) onCandleEvent(evt market.CandleEvent) {
 
 func (s *LiveService) accountSnapshot() decision.AccountSnapshot {
 	if s == nil || s.freqManager == nil {
-		return decision.AccountSnapshot{Total: s.cfg.Trading.StaticBalance, Currency: "USDT"}
+		return decision.AccountSnapshot{Currency: "USDT"}
 	}
-	bal := s.freqManager.AccountBalance()
-	if bal.Total <= 0 {
-		bal.Total = s.cfg.Trading.StaticBalance
-	}
-	if bal.Available <= 0 && bal.Total > 0 {
-		bal.Available = bal.Total
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	bal, err := s.freqManager.RefreshBalance(ctx)
+	if err != nil {
+		logger.Warnf("获取 freqtrade 余额失败: %v", err)
+		bal = s.freqManager.AccountBalance()
 	}
 	currency := bal.StakeCurrency
 	if strings.TrimSpace(currency) == "" {
@@ -788,10 +783,30 @@ func (s *LiveService) freqtradeHandleDecision(ctx context.Context, traceID strin
 	if s.freqManager == nil {
 		return nil
 	}
-	return s.freqManager.Execute(ctx, freqexec.DecisionInput{
+	traceID = s.ensureTraceID(traceID)
+	logger.Infof("freqtrade: 接收决策 trace=%s symbol=%s action=%s", traceID, strings.ToUpper(strings.TrimSpace(d.Symbol)), d.Action)
+	if d.Action == "open_long" || d.Action == "open_short" {
+		price := s.latestPrice(ctx, d.Symbol)
+		if price <= 0 {
+			err := fmt.Errorf("获取 %s 当前价格失败，无法开仓", strings.ToUpper(d.Symbol))
+			logger.Warnf("freqtrade: %v", err)
+			return err
+		}
+		if err := validateDecisionForOpen(d, price, s.cfg.Freqtrade.MinStopDistancePct); err != nil {
+			logger.Warnf("freqtrade: 决策非法 symbol=%s action=%s err=%v", d.Symbol, d.Action, err)
+			return err
+		}
+		logger.Infof("freqtrade: 验证通过 trace=%s symbol=%s side=%s price=%.4f sl=%.4f tp=%.4f", traceID, strings.ToUpper(strings.TrimSpace(d.Symbol)), deriveSide(d.Action), price, d.StopLoss, d.TakeProfit)
+		traceID = s.freqManager.CacheDecision(traceID, d)
+	}
+	if err := s.freqManager.Execute(ctx, freqexec.DecisionInput{
 		TraceID:  traceID,
 		Decision: d,
-	})
+	}); err != nil {
+		return err
+	}
+	logger.Infof("freqtrade: 决策已提交 trace=%s symbol=%s action=%s", traceID, strings.ToUpper(strings.TrimSpace(d.Symbol)), d.Action)
+	return nil
 }
 
 // HandleFreqtradeWebhook implements livehttp.FreqtradeWebhookHandler.
@@ -799,22 +814,44 @@ func (s *LiveService) HandleFreqtradeWebhook(ctx context.Context, msg freqexec.W
 	if s == nil || s.freqManager == nil {
 		return fmt.Errorf("live service 未初始化")
 	}
+	logger.Infof("收到 freqtrade webhook: type=%s trade_id=%d pair=%s direction=%s",
+		strings.ToLower(strings.TrimSpace(msg.Type)),
+		int(msg.TradeID),
+		strings.ToUpper(strings.TrimSpace(msg.Pair)),
+		strings.ToLower(strings.TrimSpace(msg.Direction)))
 	s.freqManager.HandleWebhook(ctx, msg)
 	return nil
 }
 
 // ListFreqtradePositions implements livehttp.FreqtradeWebhookHandler.
-func (s *LiveService) ListFreqtradePositions(ctx context.Context, opts freqexec.PositionListOptions) []freqexec.APIPosition {
-	if s == nil || s.freqManager == nil {
-		return nil
+func (s *LiveService) ListFreqtradePositions(ctx context.Context, opts freqexec.PositionListOptions) (freqexec.PositionListResult, error) {
+	// 默认回传分页参数，避免零值。
+	result := freqexec.PositionListResult{
+		Page:     opts.Page,
+		PageSize: opts.PageSize,
 	}
-	positions := s.freqManager.PositionsForAPI(ctx, opts)
-	if len(positions) == 0 {
-		return positions
+	if result.Page < 1 {
+		result.Page = 1
+	}
+	if result.PageSize <= 0 {
+		result.PageSize = 10
+	}
+	if result.PageSize > 500 {
+		result.PageSize = 500
+	}
+	if s == nil || s.freqManager == nil {
+		return result, nil
+	}
+	res, err := s.freqManager.PositionsForAPI(ctx, opts)
+	if err != nil {
+		return res, err
+	}
+	if len(res.Positions) == 0 {
+		return res, nil
 	}
 	cache := make(map[string]float64)
-	for i := range positions {
-		pos := &positions[i]
+	for i := range res.Positions {
+		pos := &res.Positions[i]
 		if strings.EqualFold(pos.Status, "closed") {
 			if pos.ExitPrice > 0 {
 				pos.CurrentPrice = pos.ExitPrice
@@ -848,7 +885,7 @@ func (s *LiveService) ListFreqtradePositions(ctx context.Context, opts freqexec.
 			pos.PnLUSD = ratio * pos.Stake
 		}
 	}
-	return positions
+	return res, nil
 }
 
 // CloseFreqtradePosition implements livehttp.FreqtradeWebhookHandler.
@@ -876,6 +913,7 @@ func (s *LiveService) CloseFreqtradePosition(ctx context.Context, symbol, side s
 		Action:     action,
 		CloseRatio: closeRatio,
 	}
+	logger.Infof("freqtrade: 手动平仓请求 symbol=%s side=%s ratio=%.4f", symbol, side, closeRatio)
 	return s.freqtradeHandleDecision(ctx, traceID, decision)
 }
 
@@ -884,6 +922,10 @@ func (s *LiveService) UpdateFreqtradeTiers(ctx context.Context, req freqexec.Tie
 	if s == nil || s.freqManager == nil {
 		return fmt.Errorf("live service 未初始化")
 	}
+	if req.Tier3Target > 0 {
+		req.TakeProfit = req.Tier3Target
+	}
+	logger.Infof("freqtrade: 手动 tier 调整 trade_id=%d symbol=%s", req.TradeID, strings.ToUpper(strings.TrimSpace(req.Symbol)))
 	return s.freqManager.UpdateTiersManual(ctx, req)
 }
 
@@ -909,4 +951,72 @@ func (s *LiveService) ensureTraceID(raw string) string {
 		return id
 	}
 	return fmt.Sprintf("trace-%d", time.Now().UnixNano())
+}
+
+func validateDecisionForOpen(d decision.Decision, price float64, offsetPct float64) error {
+	if strings.TrimSpace(d.Symbol) == "" {
+		return fmt.Errorf("symbol 不能为空")
+	}
+	if d.PositionSizeUSD <= 0 {
+		return fmt.Errorf("缺少开仓仓位金额")
+	}
+	if d.Leverage <= 0 {
+		return fmt.Errorf("缺少杠杆倍数")
+	}
+	if price <= 0 {
+		return fmt.Errorf("当前价格不可用")
+	}
+	if offsetPct < 0 {
+		offsetPct = 0
+	}
+	if d.TakeProfit <= 0 || d.StopLoss <= 0 {
+		return fmt.Errorf("缺少止盈/止损")
+	}
+	if d.Tiers == nil {
+		return fmt.Errorf("缺少 tiers 配置")
+	}
+	t := d.Tiers
+	if t.Tier1Target <= 0 || t.Tier2Target <= 0 || t.Tier3Target <= 0 {
+		return fmt.Errorf("tier 目标价必须大于 0")
+	}
+	if t.Tier1Ratio <= 0 || t.Tier2Ratio <= 0 || t.Tier3Ratio <= 0 {
+		return fmt.Errorf("tier 比例必须大于 0")
+	}
+	sum := t.Tier1Ratio + t.Tier2Ratio + t.Tier3Ratio
+	if math.Abs(sum-1) > 1e-3 {
+		return fmt.Errorf("tier 比例之和必须等于 1，当前=%.4f", sum)
+	}
+	offset := price * offsetPct
+	upper := price + offset
+	lower := price - offset
+	switch d.Action {
+	case "open_long":
+		if !(d.StopLoss < lower) {
+			return fmt.Errorf("多单止损必须低于当前价-偏移, sl=%.4f price=%.4f offset=%.4f", d.StopLoss, price, offset)
+		}
+		if !(upper <= t.Tier1Target && t.Tier1Target <= t.Tier2Target && t.Tier2Target <= t.Tier3Target) {
+			return fmt.Errorf("多单 tier 价格必须递增且高于当前价+偏移")
+		}
+		if !almostEqual(t.Tier3Target, d.TakeProfit) {
+			return fmt.Errorf("多单 tier3 必须等于 take_profit")
+		}
+	case "open_short":
+		if !(d.StopLoss > upper) {
+			return fmt.Errorf("空单止损必须高于当前价+偏移, sl=%.4f price=%.4f offset=%.4f", d.StopLoss, price, offset)
+		}
+		if !(lower >= t.Tier1Target && t.Tier1Target >= t.Tier2Target && t.Tier2Target >= t.Tier3Target) {
+			return fmt.Errorf("空单 tier 价格必须递减且低于当前价-偏移")
+		}
+		if !almostEqual(t.Tier3Target, d.TakeProfit) {
+			return fmt.Errorf("空单 tier3 必须等于 take_profit")
+		}
+	default:
+		return fmt.Errorf("不支持的 action: %s", d.Action)
+	}
+	return nil
+}
+
+func almostEqual(a, b float64) bool {
+	const eps = 1e-6
+	return math.Abs(a-b) <= eps
 }

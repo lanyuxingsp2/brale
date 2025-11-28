@@ -43,6 +43,8 @@ type LegacyEngineAdapter struct {
 	Horizon     brcfg.HorizonProfile
 	HorizonName string
 	MultiAgent  brcfg.MultiAgentConfig
+	// ProviderPreference 控制同权重/同动作时的模型优先级，按配置顺序匹配。
+	ProviderPreference []string
 
 	Name_ string
 
@@ -158,6 +160,10 @@ func (e *LegacyEngineAdapter) Decide(ctx context.Context, input Context) (Decisi
 		}
 	}
 
+	if len(e.ProviderPreference) > 0 {
+		outs = orderOutputsByPreference(outs, e.ProviderPreference)
+	}
+
 	// 聚合选择一个有效输出
 	agg := e.Agg
 	if agg == nil {
@@ -237,6 +243,29 @@ func (e *LegacyEngineAdapter) Decide(ctx context.Context, input Context) (Decisi
 	result.TraceID = traceID
 	best.Parsed.TraceID = traceID
 	return result, nil
+}
+
+func orderOutputsByPreference(outs []ModelOutput, pref []string) []ModelOutput {
+	if len(outs) <= 1 || len(pref) == 0 {
+		return outs
+	}
+	idx := buildPreferenceIndex(pref)
+	fallback := len(idx) + 1
+	sort.SliceStable(outs, func(i, j int) bool {
+		ri := fallback
+		if v, ok := idx[outs[i].ProviderID]; ok {
+			ri = v
+		}
+		rj := fallback
+		if v, ok := idx[outs[j].ProviderID]; ok {
+			rj = v
+		}
+		if ri != rj {
+			return ri < rj
+		}
+		return outs[i].ProviderID < outs[j].ProviderID
+	})
+	return outs
 }
 
 // ComposePrompts 返回当前配置下的 System/User 提示词。
@@ -329,7 +358,7 @@ func (e *LegacyEngineAdapter) buildUserSummary(ctx context.Context, input Contex
 	}
 	req := `请先输出简短的【思维链】（3句，说明判断依据与结论），换行后仅输出 JSON 数组。
 	JSON 每项必须包含 symbol、action、reasoning（写出 bull_score、bear_score、ATR 语境），并遵守：
-	- action 为 open_long/open_short：返回 take_profit、stop_loss（绝对价）、leverage（2–50）以及 tiers 对象（含 tier1/2/3 target 与 ratio，ratio 省略时程序默认 33%/33%/34%）。
+	- action 为 open_long/open_short：返回 take_profit、stop_loss（绝对价）、leverage（2–50）以及 tiers 对象（含 tier1/2/3 target 与 ratio，ratio 总值必须为100%。必须提供 position_size_usd）。
     - 当当前有仓位时，action才可返回update_tiers，adjust_stop_loss，adjust_take_profit，不然不可返回。
     - 只有在 Tier1 已实际成交（确认并执行平仓指令）时，才允许将止损抬到保本；未完成 Tier1 时不得因‘触达/接近’而上移止损。
 	- action 为 update_tiers：当结构或波动变化需要调整三段目标时输出，并在 tiers 对象内给出新的 target/ratio；**每个被调整的段必须同时提供 target 与 ratio**，且仅能修改未完成 (tier*_done=0) 的段位，已标注 ✅ 的段不可更改。
@@ -339,7 +368,7 @@ func (e *LegacyEngineAdapter) buildUserSummary(ctx context.Context, input Contex
 	- 无操作时仅输出 hold。
 	示例:
 	【思维链】4h 需求区测试成功 + 15m EMA 多头排列，ATR 扩张允许 1.8R 目标。
-     [{"symbol":"BTCUSDT","action":"open_long","take_profit":73000,"stop_loss":70500,"leverage":6,"tiers":{"tier1_target":71200,"tier1_ratio":0.33,"tier2_target":72000,"tier2_ratio":0.33,"tier3_target":73500,"tier3_ratio":0.34},"reasoning":"bull_score=72,bear_score=28，ATR Normal；H4 需求区与EMA55 共振"}]
+     [{"symbol":"BTCUSDT","action":"open_long","take_profit":73000,"position_size_usd":1000,"stop_loss":70500,"leverage":6,"tiers":{"tier1_target":71200,"tier1_ratio":0.33,"tier2_target":72000,"tier2_ratio":0.33,"tier3_target":73500,"tier3_ratio":0.34},"reasoning":"bull_score=72,bear_score=28，ATR Normal；H4 需求区与EMA55 共振"}]
      `
 	b.WriteString(req)
 

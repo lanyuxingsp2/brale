@@ -17,7 +17,10 @@ import (
 // - 对 symbol+action 进行加权投票，权重达到 2/3（默认）阈值才执行；不足则忽略
 // - 若 "hold" 票数达到阈值，则整轮观望
 // - MetaSummary 会列出各 symbol 各动作的票数，方便查看分歧
-type MetaAggregator struct{ Weights map[string]float64 }
+type MetaAggregator struct {
+	Weights    map[string]float64
+	Preference []string // 权重/动作相同时用于决策与原文选择的优先级
+}
 
 type metaChoice struct {
 	ID       string
@@ -30,10 +33,11 @@ func (a MetaAggregator) Name() string { return "meta" }
 const holdSymbolKey = "__META_HOLD__"
 
 func (a MetaAggregator) Aggregate(ctx context.Context, outputs []ModelOutput) (ModelOutput, error) {
-	votes := map[string]map[string]float64{}                       // symbol -> action -> weight
-	details := map[string]map[string][]metaChoice{}               // symbol -> action -> choices
-	seen := map[string]map[string]bool{}                          // provider -> sym#act -> seen?
-	totalWeight := 0.0                                            // 累积参与投票的权重
+	votes := map[string]map[string]float64{}        // symbol -> action -> weight
+	details := map[string]map[string][]metaChoice{} // symbol -> action -> choices
+	seen := map[string]map[string]bool{}            // provider -> sym#act -> seen?
+	totalWeight := 0.0                              // 累积参与投票的权重
+	prefIndex := buildPreferenceIndex(a.Preference)
 	for _, o := range outputs {
 		if o.Err != nil || len(o.Parsed.Decisions) == 0 {
 			continue
@@ -90,7 +94,7 @@ func (a MetaAggregator) Aggregate(ctx context.Context, outputs []ModelOutput) (M
 				Decisions:   []Decision{{Action: "hold"}},
 				MetaSummary: buildHoldSummary(votes, details, threshold),
 			}
-			return buildMetaOutput(outputs, res, map[string]float64{}), nil
+			return buildMetaOutput(outputs, res, map[string]float64{}, prefIndex), nil
 		}
 	}
 
@@ -115,7 +119,7 @@ func (a MetaAggregator) Aggregate(ctx context.Context, outputs []ModelOutput) (M
 			if weight < threshold || act == "hold" {
 				continue
 			}
-			choice := pickDecision(details[sym][act], act, sym)
+			choice := pickDecision(details[sym][act], act, sym, prefIndex)
 			decisions = append(decisions, choice)
 			for _, c := range details[sym][act] {
 				if NormalizeAction(c.Decision.Action) == act {
@@ -130,24 +134,42 @@ func (a MetaAggregator) Aggregate(ctx context.Context, outputs []ModelOutput) (M
 			Decisions:   []Decision{{Action: "hold"}},
 			MetaSummary: buildHoldSummary(votes, details, threshold),
 		}
-		return buildMetaOutput(outputs, res, map[string]float64{}), nil
+		return buildMetaOutput(outputs, res, map[string]float64{}, prefIndex), nil
 	}
 	summary := buildActionSummary(votes, details, threshold)
 	res := DecisionResult{Decisions: decisions, MetaSummary: summary}
-	return buildMetaOutput(outputs, res, winners), nil
+	return buildMetaOutput(outputs, res, winners, prefIndex), nil
 }
 
-func pickDecision(choices []metaChoice, action, symbol string) Decision {
+func pickDecision(choices []metaChoice, action, symbol string, pref map[string]int) Decision {
 	act := NormalizeAction(action)
-	bestIdx := -1
-	bestWeight := -1.0
-	for i, c := range choices {
+	maxWeight := -1.0
+	for _, c := range choices {
 		if NormalizeAction(c.Decision.Action) != act {
 			continue
 		}
-		if c.Weight > bestWeight {
-			bestWeight = c.Weight
+		if c.Weight > maxWeight {
+			maxWeight = c.Weight
+		}
+	}
+	if maxWeight < 0 {
+		return Decision{Symbol: symbol, Action: act}
+	}
+	bestIdx := -1
+	bestRank := len(pref) + 1
+	bestProvider := ""
+	for i, c := range choices {
+		if NormalizeAction(c.Decision.Action) != act || c.Weight != maxWeight {
+			continue
+		}
+		rank := len(pref) + 1
+		if v, ok := pref[c.ID]; ok {
+			rank = v
+		}
+		if bestIdx == -1 || rank < bestRank || (rank == bestRank && c.ID < bestProvider) {
 			bestIdx = i
+			bestRank = rank
+			bestProvider = c.ID
 		}
 	}
 	if bestIdx == -1 {
@@ -159,7 +181,7 @@ func pickDecision(choices []metaChoice, action, symbol string) Decision {
 	return dup
 }
 
-func pickWeightedProvider(weights map[string]float64) string {
+func pickWeightedProvider(weights map[string]float64, pref map[string]int) string {
 	total := 0.0
 	ids := make([]string, 0, len(weights))
 	for id, w := range weights {
@@ -171,6 +193,22 @@ func pickWeightedProvider(weights map[string]float64) string {
 	}
 	if total == 0 || len(ids) == 0 {
 		return ""
+	}
+	if len(pref) > 0 {
+		bestID := ""
+		bestRank := len(pref) + 1
+		for id, w := range weights {
+			if w <= 0 {
+				continue
+			}
+			if r, ok := pref[id]; ok && r < bestRank {
+				bestID = id
+				bestRank = r
+			}
+		}
+		if bestID != "" {
+			return bestID
+		}
 	}
 	sort.Strings(ids)
 	rnd := rand.New(rand.NewSource(time.Now().UnixNano()))
@@ -250,14 +288,14 @@ func buildActionSummary(votes map[string]map[string]float64, details map[string]
 	return b.String()
 }
 
-func buildMetaOutput(outputs []ModelOutput, res DecisionResult, winners map[string]float64) ModelOutput {
+func buildMetaOutput(outputs []ModelOutput, res DecisionResult, winners map[string]float64, pref map[string]int) ModelOutput {
 	best := ModelOutput{ProviderID: "meta", Parsed: res}
 	if len(outputs) == 1 && outputs[0].Err == nil {
 		best.Raw = outputs[0].Raw
 		best.Parsed.RawJSON = outputs[0].Parsed.RawJSON
 		return best
 	}
-	if id := pickWeightedProvider(winners); id != "" {
+	if id := pickWeightedProvider(winners, pref); id != "" {
 		if out := findProviderOutput(outputs, id); out != nil && out.Err == nil && out.Raw != "" {
 			best.Raw = out.Raw
 			best.Parsed.RawJSON = out.Parsed.RawJSON

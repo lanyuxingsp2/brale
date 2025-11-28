@@ -2,7 +2,6 @@ package config
 
 import (
 	"fmt"
-	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -68,7 +67,6 @@ type Config struct {
 // TradingConfig 控制模拟/实盘资金来源与默认仓位策略。
 type TradingConfig struct {
 	Mode               string  `toml:"mode"`                 // "static" | 后续扩展 "live"
-	StaticBalance      float64 `toml:"static_balance"`       // 静态账户资金（USDT）
 	MaxPositionPct     float64 `toml:"max_position_pct"`     // 单笔最大占用比例 0~1
 	DefaultPositionUSD float64 `toml:"default_position_usd"` // 若>0，直接作为 fallback 仓位
 	DefaultLeverage    int     `toml:"default_leverage"`     // 缺省杠杆
@@ -88,6 +86,7 @@ type FreqtradeConfig struct {
 	WebhookURL         string  `toml:"webhook_url"`
 	RiskStorePath      string  `toml:"risk_store_path"`
 	MinStopDistancePct float64 `toml:"min_stop_distance_pct"`
+	EntryTag           string  `toml:"entry_tag"`
 }
 
 // AIConfig 包含与模型、持仓周期相关的所有设置。
@@ -95,6 +94,7 @@ type AIConfig struct {
 	Aggregation             string                    `toml:"aggregation"`
 	LogEachModel            bool                      `toml:"log_each_model"`
 	Weights                 map[string]float64        `toml:"weights"`
+	ProviderPreference      []string                  `toml:"provider_preference"`
 	DecisionIntervalSeconds int                       `toml:"decision_interval_seconds"`
 	DecisionLogPath         string                    `toml:"decision_log_path"`
 	IncludeLastDecision     bool                      `toml:"include_last_decision"`
@@ -373,18 +373,10 @@ func (m MarketConfig) ResolveActiveSource() MarketSource {
 	return fallback
 }
 
-// PositionSizeUSD 返回默认仓位大小（若设置 default_position_usd 则直接返回，
-// 否则按 static_balance × max_position_pct 计算，自动限制不超过账户余额）。
+// PositionSizeUSD 返回默认仓位大小（若设置 default_position_usd 则直接返回）。
 func (t TradingConfig) PositionSizeUSD() float64 {
 	if t.DefaultPositionUSD > 0 {
 		return t.DefaultPositionUSD
-	}
-	if t.StaticBalance > 0 && t.MaxPositionPct > 0 {
-		size := t.StaticBalance * t.MaxPositionPct
-		if size <= 0 {
-			return 0
-		}
-		return math.Min(size, t.StaticBalance)
 	}
 	return 0
 }
@@ -608,6 +600,26 @@ func collectConfigFiles(path string, seen, stack map[string]bool) ([]string, err
 	return ordered, nil
 }
 
+func normalizePreferenceList(pref []string) []string {
+	if len(pref) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(pref))
+	seen := make(map[string]bool, len(pref))
+	for _, id := range pref {
+		id = strings.TrimSpace(id)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 // 默认值设置
 func applyDefaults(c *Config) {
 	if c.App.Env == "" {
@@ -631,6 +643,7 @@ func applyDefaults(c *Config) {
 	if c.AI.ProviderPresets == nil {
 		c.AI.ProviderPresets = make(map[string]ModelPreset)
 	}
+	c.AI.ProviderPreference = normalizePreferenceList(c.AI.ProviderPreference)
 	profileDefaults := c.AI.ProfileDefaults
 	profileDefaults.normalize()
 	if profileDefaults.AnalysisSlice <= 0 {
@@ -743,9 +756,6 @@ func applyDefaults(c *Config) {
 	if c.Trading.Mode == "" {
 		c.Trading.Mode = "static"
 	}
-	if c.Trading.StaticBalance <= 0 {
-		c.Trading.StaticBalance = 10000
-	}
 	if c.Trading.MaxPositionPct <= 0 || c.Trading.MaxPositionPct > 1 {
 		c.Trading.MaxPositionPct = 0.05
 	}
@@ -801,6 +811,17 @@ func validate(c *Config) error {
 		}
 		if strings.TrimSpace(m.Provider) == "" {
 			return fmt.Errorf("ai.models.%s 缺少 provider", m.ID)
+		}
+	}
+	if len(c.AI.ProviderPreference) > 0 {
+		modelSet := make(map[string]struct{}, len(models))
+		for _, m := range models {
+			modelSet[m.ID] = struct{}{}
+		}
+		for _, id := range c.AI.ProviderPreference {
+			if _, ok := modelSet[id]; !ok {
+				return fmt.Errorf("ai.provider_preference 包含未配置的模型 id: %s", id)
+			}
 		}
 	}
 	if c.Kline.MaxCached < 50 || c.Kline.MaxCached > 1000 {
@@ -875,9 +896,6 @@ func validate(c *Config) error {
 	}
 	if c.Trading.Mode != "static" {
 		return fmt.Errorf("trading.mode 当前仅支持 static，收到 %s", c.Trading.Mode)
-	}
-	if c.Trading.StaticBalance <= 0 {
-		return fmt.Errorf("trading.static_balance 需 > 0")
 	}
 	if c.Trading.MaxPositionPct <= 0 || c.Trading.MaxPositionPct > 1 {
 		return fmt.Errorf("trading.max_position_pct 需在 (0, 1] 区间")

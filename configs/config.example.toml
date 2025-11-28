@@ -1,260 +1,152 @@
-# Example config for GitHub (no secrets). Copy to configs/config.toml for local use.
-# 若要拆分公共模板，可在任意文件顶部添加 include，如：
-# include = ["./base.toml", "./secrets.toml"]
+# Brale 示例配置（整合 base.toml + config.toml，带中文注释）。
+# 建议复制为 configs/config.toml 后按需调整；敏感字段需替换为自己的值。
 
 [app]
-# env：用于区分运行环境（只影响日志/通知），自由填写。
-env = "dev"
-# log_level：日志级别（debug|info|warn|error）。
-log_level = "info"
-# log_path：可选，若填写则把日志输出追加到该文件（同时保留 stdout）。
-log_path = ""
-# llm_log_path：可选，需配合 llm_dump_payload=true 才会写入。
-llm_log_path = ""
-# llm_dump_payload：开启后才会生成 llm_log_path 日志，并把完整请求 JSON 追加进去（调试用）。
-llm_dump_payload = false
-# http_addr：Live HTTP 服务监听地址。
-http_addr = ":9991"
+env = "dev"                # 运行环境标识
+log_level = "info"         # 日志级别：debug|info|warn|error
+http_addr = ":9991"        # HTTP 监听地址
+log_path = "/data/logs/brale-live.log"     # 主日志文件（同时输出 stdout）
+llm_log_path = "/data/logs/brale-llm.log"  # LLM 请求/响应日志
+llm_dump_payload = false                   # 如需记录完整 payload 可置为 true
 
 [symbols]
-# provider：default 使用本地列表，http 则从远端拉取。
-provider = "default"
-# default_list：default 模式下的币种集合。
-default_list = ["BTCUSDT", "ETHUSDT"]
-# api_url：http 模式的远端地址（返回数组或 {"symbols": []}）。
-api_url = ""
+provider = "default"        # 币种列表来源 default|http
+default_list = ["ETHUSDT"]  # 监控交易对
 
 [kline]
-# max_cached：内存中每个 symbol×周期最多缓存的 K 线根数。
-max_cached = 200
+max_cached = 300            # 每个周期缓存的 K 线条数上限
 
 [market]
-# active_source：选择一个启用的数据源。
-active_source = "binance"
-
+active_source = "binance"   # 默认市场数据源
 [[market.sources]]
-# name：行情源唯一名称。
 name = "binance"
-# enabled：是否启用该数据源。
 enabled = true
-# rest_base_url：REST K 线接口根地址。
 rest_base_url = "https://fapi.binance.com"
-# ws_base_url：WS 合并流根地址，提供实时 K 线。
 ws_base_url = "wss://fstream.binance.com/stream"
-# rate_limit_per_min：REST 速率上限（每分钟请求数）。
 rate_limit_per_min = 1200
-# ws_batch_size：WS 订阅时的单批 symbol×interval 数，避免过大被限流。
 ws_batch_size = 150
 
 [ai]
-# aggregation：模型聚合策略（first-wins | meta）。
-aggregation = "meta"
-# log_each_model：是否输出每个模型的请求/响应，调试时可开启。
-log_each_model = false
-# decision_interval_seconds：两次 AI 决策之间的时间间隔（秒）。
-decision_interval_seconds = 60
-# decision_log_path：实时决策日志 SQLite 路径，留空则不落盘。
-decision_log_path = "data/live/decisions.db"
-# include_last_decision：是否把上一轮决策作为上下文提示模型。
-include_last_decision = true
-# last_decision_max_age_seconds：上一轮决策可复用的最长时间（秒）。
-last_decision_max_age_seconds = 3600
-# active_horizon：当前持仓周期的名称，对应 holding_horizon_profiles.*。
-active_horizon = "one_hour"
-# weights：meta 聚合使用的模型权重（键为模型 id，值为浮点权重）。
-weights = { openai_main = 1.0, deepseek_backup = 1.0, qwen_helper = 1.0 }
+aggregation = "meta"                       # 决策聚合策略：meta/first 等
+decision_log_path = "/data/live/decisions.db" # 决策日志 SQLite 路径
+last_decision_max_age_seconds = 3600       # 上一轮决策缓存有效期
+weights = { openai = 1.0, deepseek = 1.0, qwen = 1.0, vanchin = 1.0 }
+log_each_model = true
+include_last_decision = true               # 是否把上一轮决策作为上下文
+decision_interval_seconds = 600            # 决策间隔秒数
+active_horizon = "four_hour"               # 启用的持仓周期配置
+provider_preference = ["qwen", "deepseek"] # 模型偏好顺序
 
 [ai.profile_defaults]
-# analysis_slice：若 profile 未指定，默认让 LLM 查看最近多少根。
-# 该值不能小于指标所需的最小历史（max(EMA slow, RSI period+1, MACD)），
-# 否则会自动被提升到对应的 lookback（例如默认 slow EMA=200，则 slice 至少 200）。
-analysis_slice = 46
-# slice_drop_tail：默认丢弃最新多少根未收盘蜡烛。
-slice_drop_tail = 3
+analysis_slice = 99                        # 默认截取的历史根数
+slice_drop_tail = 1                        # 默认丢弃的最新蜡烛数量
+
 [ai.profile_defaults.indicators.ema]
-# fast/mid/slow：默认 EMA 周期（单位：根）。
-fast = 21
-mid = 50
-slow = 200
+fast = 7
+mid = 25
+slow = 99
 [ai.profile_defaults.indicators.rsi]
-# period/oversold/overbought：默认 RSI 参数。
 period = 14
 oversold = 33
 overbought = 68
 
-[ai.provider_presets.openai]
-# api_url：OpenAI 兼容接口的 BaseURL。
-api_url = "https://api.openai.com/v1"
-# api_key：对应接口的密钥（示例为空，请本地填写）。
-api_key = ""
-# supports_vision：该 Provider 是否支持 image_url 多模态。
-supports_vision = true
-# expect_json：是否强制 response_format=json（强烈推荐）。
-expect_json = true
-
-[ai.provider_presets.deepseek]
-# api_url：DeepSeek OpenAI 兼容入口。
-api_url = "https://api.deepseek.com/v1"
-# api_key：DeepSeek API 密钥。
-api_key = ""
-# supports_vision：DeepSeek 模型是否支持图像。
-supports_vision = false
-# expect_json：是否强制 JSON 输出。
-expect_json = true
-
-[ai.provider_presets.qwen]
-# api_url：Qwen OpenAI 兼容入口。
-api_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-# api_key：Qwen API 密钥。
-api_key = ""
-# supports_vision：Qwen 是否支持图像。
-supports_vision = true
-# expect_json：是否强制 JSON 输出。
-expect_json = true
-
-[[ai.models]]
-# id：模型唯一标识，用于打权重/日志。
-id = "openai_main"
-# provider：业务层识别用的 Provider 名称（openai/deepseek/qwen...）。
-provider = "openai"
-# preset：引用上方 provider_presets 的名称，省去重复填写 api_url/api_key。
-preset = "openai"
-# enabled：true 表示参与决策，false 仅保留配置。
-enabled = true
-# model：具体模型名称。
-model = "gpt-4o-mini"
-# supports_vision/expect_json：可按需覆盖预设值。
-supports_vision = true
-expect_json = true
-
-[[ai.models]]
-# id：第二个模型
-id = "deepseek_backup"
-# provider：DeepSeek
-provider = "deepseek"
-# preset：复用 deepseek 预设
-preset = "deepseek"
-# enabled：启用
-enabled = true
-# model：DeepSeek 模型名
-model = "deepseek-chat"
-
-[[ai.models]]
-# id：第三个模型
-id = "qwen_helper"
-# provider：Qwen
-provider = "qwen"
-# preset：引用 qwen 预设
-preset = "qwen"
-# enabled：启用
-enabled = false
-# model：Qwen 模型名
-model = "qwen-max"
-
-[ai.multi_agent]
-# enabled：是否启用多阶段 Agent（指标→形态→趋势→决策）。
-enabled = true
-# indicator_provider/pattern_provider/trend_provider：可指定由哪个模型执行（留空则使用模型列表顺序）。
-indicator_provider = ""
-pattern_provider = ""
-trend_provider = ""
-# indicator_template/pattern_template/trend_template：对应 prompts 目录下的模板名称。
-indicator_template = "agent_indicator"
-pattern_template = "agent_pattern"
-trend_template = "agent_trend"
-# max_blocks：单次拆分的 symbol×interval 最大组合数。
-max_blocks = 4
-
 [ai.holding_horizon_profiles.one_hour]
-# entry_timeframes：入场判断使用的周期列表。
 entry_timeframes = ["5m", "15m"]
-# confirm_timeframes：信号确认用周期。
 confirm_timeframes = ["1h"]
-# background_timeframes：趋势背景周期。
 background_timeframes = ["4h"]
-# 若未指定指标，将继承 profile_defaults。此处示例：沿用默认指标。
-
-[ai.holding_horizon_profiles.four_hour]
-# 更长持仓的配置，仅列出差异化指标。
-entry_timeframes = ["15m", "30m"]
-confirm_timeframes = ["4h"]
-background_timeframes = ["1d"]
-[ai.holding_horizon_profiles.four_hour.indicators.rsi]
-# four_hour 对 RSI 阈值更保守。
+slice_drop_tail = 1
+[ai.holding_horizon_profiles.one_hour.indicators.rsi]
 oversold = 30
 overbought = 70
 
+[ai.holding_horizon_profiles.four_hour]
+entry_timeframes = ["30m", "1h"]
+confirm_timeframes = ["4h"]
+background_timeframes = ["1d"]
+[ai.holding_horizon_profiles.four_hour.indicators.rsi]
+oversold = 35
+overbought = 65
+
 [ai.holding_horizon_profiles.one_day]
-# 日线级策略示例。
 entry_timeframes = ["1h"]
 confirm_timeframes = ["4h", "1d"]
 background_timeframes = ["1w"]
 [ai.holding_horizon_profiles.one_day.indicators.rsi]
-# 日线对 RSI 阈值更宽松。
 oversold = 35
 overbought = 65
 
-[mcp]
-# timeout_seconds：单次模型推理超时时间（秒）。
-timeout_seconds = 120
+[ai.holding_horizon_profiles.quant_agent]
+entry_timeframes = ["1h"]
+confirm_timeframes = ["4h", "1d"]
+background_timeframes = ["1w"]
+slice_drop_tail = 1
+[ai.holding_horizon_profiles.quant_agent.indicators.rsi]
+oversold = 35
+overbought = 65
+
+[ai.multi_agent]
+enabled = true
+indicator_template = "agent_indicator" # 对应 prompts/agent_indicator.txt
+pattern_template = "agent_pattern"
+trend_template = "agent_trend"
+max_blocks = 4
+indicator_provider = "deepseek"        # 可指定固定模型，留空则按偏好顺序
+pattern_provider = "qwen"
+trend_provider = "vanchin"
 
 [prompt]
-# dir：提示词模板目录。
 dir = "prompts"
-# system_template：默认系统提示模板名（不含 .txt）。
 system_template = "prompt_default"
 
 [notify.telegram]
-# enabled：是否开启 Telegram 推送。
-enabled = false
-# bot_token：Bot 的 Token（示例置空，请本地填写）。
-bot_token = ""
-# chat_id：接收通知的聊天 ID。
-chat_id = ""
+enabled = true
+bot_token = "REPLACE_ME"   # 必填：你的 Telegram Bot Token
+chat_id = "REPLACE_ME"     # 必填：你的 Chat ID
 
 [freqtrade]
-# enabled：是否启用 freqtrade 执行器。
-enabled = false
-# api_url：freqtrade API Server 地址（需包含 /api/v1 前缀）。
-api_url = "http://localhost:8080/api/v1"
-# username/password：若未配置 api_token，则使用 Basic Auth。
-username = ""
-password = ""
-# api_token：可选，若填写则替代用户名密码。
-api_token = ""
-# default_stake_usd：Brale 未指定仓位时默认使用的金额。
-default_stake_usd = 100
-# default_leverage：Brale 未指定杠杆时的默认值。
-default_leverage = 1
-# timeout_seconds：调用 freqtrade API 的超时时间。
+enabled = true
+api_url = "http://freqtrade:8080/api/v1"  # freqtrade API 地址
+username = "REPLACE_ME"                   # freqtrade Basic 用户名（或留空用 api_token）
+password = "REPLACE_ME"                   # freqtrade Basic 密码
+api_token = ""                            # freqtrade API Token（可选）
+default_stake_usd = 100                   # 缺省下单金额（USDT）
+default_leverage = 1                      # 缺省杠杆
 timeout_seconds = 15
-# insecure_skip_verify：true 时跳过 HTTPS 证书校验，仅用于内网测试。
 insecure_skip_verify = false
-# webhook_url：freqtrade webook 将回调 Brale 的地址，需与 freqtrade config 保持一致。
-webhook_url = "http://127.0.0.1:9991/api/live/freqtrade/webhook"
-# risk_store_path：Brale 本地持久化止盈止损的 SQLite 路径（可选）。
-risk_store_path = "data/trade_risk.db"
+webhook_url = "http://brale:9991/api/live/freqtrade/webhook"
+risk_store_path = "/data/db/trade_risk.db"
+min_stop_distance_pct = 0.005             # 开仓验证时的最小止损距离（比例）
 
 [advanced]
-# liquidity_filter_usd_m：按 OI×价格估算的最低流动性（百万 USD）。
 liquidity_filter_usd_m = 15
-# min_risk_reward：最小允许的风险回报比。
-min_risk_reward = 3.0
-# open_cooldown_seconds：同 symbol 同方向开仓的最小冷却间隔（秒）。
+min_risk_reward = 1
 open_cooldown_seconds = 180
-# max_opens_per_cycle：单个决策周期内允许的新开仓数量。
 max_opens_per_cycle = 3
-# tier_min_distance_pct：若 Tier1 距离入场价低于该比例，则强制将三段目标统一到止盈价。
-tier_min_distance_pct = 0.002
+tier_min_distance_pct = 0.005
 
 [trading]
-# mode：资金来源策略，当前仅支持 static。
-mode = "static"
-# static_balance：静态账户初始资金（USDT）。
-static_balance = 10000
-# max_position_pct：单笔最大仓位占总资金的比例 (0~1]。
-max_position_pct = 0.05
-# default_position_usd：若 >0 则固定仓位金额；为 0 时按 static_balance×max_position_pct 推导。
-default_position_usd = 0
-# default_leverage：当决策未给出 leverage 时的兜底倍数。
-default_leverage = 2
+mode = "static"               # 资金模式（当前仅 static）
+max_position_pct = 0.01       # 单笔最大仓位占比
+default_position_usd = 0      # 固定仓位金额；0 表示按占比推导
+default_leverage = 10         # 默认杠杆（模型未提供时）
+
+[[ai.models]]
+id = "deepseek"
+provider = "deepseek"
+enabled = true
+api_url = "https://api.qnaigc.com/v1"
+api_key = "REPLACE_ME"
+model = ""
+supports_vision = false
+expect_json = false
+
+[[ai.models]]
+id = "qwen"
+provider = "qwen"
+enabled = true
+api_url = "https://api.qnaigc.com/v1"
+api_key = "REPLACE_ME"
+model = ""
+supports_vision = false
+expect_json = false
+
