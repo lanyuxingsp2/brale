@@ -99,13 +99,18 @@
                             <div class="pos-grid" v-if="desk.positions.length">
                                 <div class="pos-card" v-for="p in desk.positions" :key="p.trade_id" @click="openPosition(p.trade_id)">
                                     <div>
-                                        <div class="pos-symbol">[[ p.symbol ]]</div>
+                                        <div class="pos-main-header">
+                                            <div class="pos-symbol">[[ p.symbol ]]</div>
+                                            <span class="pos-status" :class="statusBadgeClass(p.status)">[[ statusLabel(p.status) ]]</span>
+                                        </div>
                                         <div class="pos-meta">[[ (p.side || '').toUpperCase() ]] · x[[ p.leverage ]]</div>
                                         <div class="pos-sub mt-2">Entry [[ formatNumber(p.entry_price) ]]</div>
                                     </div>
                                     <div class="text-right">
                                         <div class="pos-pnl" :class="p.pnl_ratio>0 ? 'positive' : (p.pnl_ratio<0 ? 'negative' : '')">[[ formatUSD(p.pnl_usd) ]]</div>
                                         <div class="pos-sub">ROE [[ formatPercent(p.pnl_ratio) ]]</div>
+                                        <div class="pos-sub mt-2">已实现 [[ formatUSD(p.realized_pnl_usd) ]]</div>
+                                        <div class="pos-sub">未实现 [[ formatUSD(p.unrealized_pnl_usd) ]]</div>
                                         <div class="pos-sub mt-2">SL [[ formatNumber(p.stop_loss) ]] / TP [[ formatNumber(p.take_profit) ]]</div>
                                     </div>
                                 </div>
@@ -273,17 +278,22 @@
                             <div class="pos-grid" v-if="positions.items.length">
                                 <div class="pos-card" v-for="p in positions.items" :key="p.trade_id" @click="openPosition(p.trade_id)">
                                     <div>
-                                        <div class="pos-symbol">[[ p.symbol ]]</div>
+                                        <div class="pos-main-header">
+                                            <div class="pos-symbol">[[ p.symbol ]]</div>
+                                            <span class="pos-status" :class="statusBadgeClass(p.status)">[[ statusLabel(p.status) ]]</span>
+                                        </div>
                                         <div class="pos-meta">[[ (p.side || '').toUpperCase() ]] · x[[ p.leverage ]]</div>
                                         <div class="pos-sub mt-2">Entry [[ formatNumber(p.entry_price) ]]</div>
                                     </div>
-                                    <div class="text-right">
-                                        <div class="pos-pnl" :class="p.pnl_ratio>0 ? 'positive' : (p.pnl_ratio<0 ? 'negative' : '')">[[ formatUSD(p.pnl_usd) ]]</div>
-                                        <div class="pos-sub">ROE [[ formatPercent(p.pnl_ratio) ]]</div>
-                                        <div class="pos-sub mt-2">SL [[ formatNumber(p.stop_loss) ]] / TP [[ formatNumber(p.take_profit) ]]</div>
-                                    </div>
+                                <div class="text-right">
+                                    <div class="pos-pnl" :class="p.pnl_ratio>0 ? 'positive' : (p.pnl_ratio<0 ? 'negative' : '')">[[ formatUSD(p.pnl_usd) ]]</div>
+                                    <div class="pos-sub">ROE [[ formatPercent(p.pnl_ratio) ]]</div>
+                                    <div class="pos-sub mt-2">已实现 [[ formatUSD(p.realized_pnl_usd) ]]</div>
+                                    <div class="pos-sub">未实现 [[ formatUSD(p.unrealized_pnl_usd) ]]</div>
+                                    <div class="pos-sub mt-2">SL [[ formatNumber(p.stop_loss) ]] / TP [[ formatNumber(p.take_profit) ]]</div>
                                 </div>
                             </div>
+                        </div>
                             <p v-else class="muted italic">暂无持仓。</p>
                         </div>
                         <div class="pager" v-if="positions.total > positions.pageSize">
@@ -302,7 +312,10 @@
                         <div class="pos-grid">
                             <div class="pos-card" v-for="p in positions.closed" :key="'closed-'+p.trade_id">
                                 <div>
-                                    <div class="pos-symbol">[[ p.symbol ]]</div>
+                                    <div class="pos-main-header">
+                                        <div class="pos-symbol">[[ p.symbol ]]</div>
+                                        <span class="pos-status" :class="statusBadgeClass(p.status)">[[ statusLabel(p.status) ]]</span>
+                                    </div>
                                     <div class="pos-meta">[[ (p.side || '').toUpperCase() ]] · x[[ p.leverage ]]</div>
                                     <div class="pos-sub mt-2">Entry [[ formatNumber(p.entry_price) ]] · Exit [[ formatNumber(p.exit_price) ]]</div>
                                 </div>
@@ -311,6 +324,7 @@
                                         [[ p.pnl_ratio>0 ? '已盈利 ' : (p.pnl_ratio<0 ? '已亏损 ' : '') ]][[ formatUSD(p.pnl_usd) ]]
                                     </div>
                                     <div class="pos-sub">ROE [[ formatPercent(p.pnl_ratio) ]]</div>
+                                    <div class="pos-sub mt-2">已实现 [[ formatUSD(p.realized_pnl_usd !== undefined ? p.realized_pnl_usd : p.pnl_usd) ]]</div>
                                 </div>
                             </div>
                         </div>
@@ -343,6 +357,7 @@
                                     <p class="muted">盈亏</p>
                                     <h3 :class="positionDetail.data.pnl_ratio>0 ? 'text-emerald-600' : (positionDetail.data.pnl_ratio<0 ? 'text-red-600' : '')">[[ formatUSD(positionDetail.data.pnl_usd) ]]</h3>
                                     <p class="muted">ROE [[ formatPercent(positionDetail.data.pnl_ratio) ]]</p>
+                                    <p class="muted">已实现 [[ formatUSD(positionDetail.data.realized_pnl_usd) ]] · 未实现 [[ formatUSD(positionDetail.data.unrealized_pnl_usd) ]]</p>
                                     <p class="muted" v-if="positionDetail.data.status==='closed'">已平仓</p>
                                 </div>
                                 <div class="detail-card">

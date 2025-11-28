@@ -51,6 +51,7 @@ func (m *Manager) forceEnter(ctx context.Context, traceID string, d decision.Dec
 	resp, err := m.client.ForceEnter(ctx, payload)
 	if err != nil {
 		m.logExecutor(ctx, traceID, d, 0, "forceenter_error", recData, err)
+		m.discardQueuedDecision(traceID)
 		m.notify("Freqtrade 建仓请求失败 ❌",
 			fmt.Sprintf("标的: %s (%s)", strings.ToUpper(d.Symbol), pair),
 			fmt.Sprintf("方向: %s  杠杆: x%.2f", strings.ToUpper(side), lev),

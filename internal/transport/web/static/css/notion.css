@@ -407,6 +407,26 @@ a:hover {
     padding: 2px 8px;
     color: var(--notion-muted);
 }
+.pos-status.status-open {
+    border-color: #10b981;
+    color: #065f46;
+    background: rgba(16, 185, 129, 0.12);
+}
+.pos-status.status-pending {
+    border-color: #fbbf24;
+    color: #92400e;
+    background: rgba(251, 191, 36, 0.18);
+}
+.pos-status.status-partial {
+    border-color: #6366f1;
+    color: #312e81;
+    background: rgba(99, 102, 241, 0.15);
+}
+.pos-status.status-closed {
+    border-color: #94a3b8;
+    color: #0f172a;
+    background: rgba(148, 163, 184, 0.2);
+}
 
 .pos-line {
     font-size: 0.82rem;

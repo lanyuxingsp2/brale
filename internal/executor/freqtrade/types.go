@@ -10,39 +10,83 @@ import (
 
 // APIPosition 用于 /api/live/freqtrade/positions 返回的数据结构。
 type APIPosition struct {
-	TradeID        int                             `json:"trade_id"`
-	Symbol         string                          `json:"symbol"`
-	Side           string                          `json:"side"`
-	EntryPrice     float64                         `json:"entry_price"`
-	Amount         float64                         `json:"amount"`
-	Stake          float64                         `json:"stake"`
-	Leverage       float64                         `json:"leverage"`
-	PositionValue  float64                         `json:"position_value,omitempty"`
-	OpenedAt       int64                           `json:"opened_at"`
-	HoldingMs      int64                           `json:"holding_ms"`
-	StopLoss       float64                         `json:"stop_loss,omitempty"`
-	TakeProfit     float64                         `json:"take_profit,omitempty"`
-	CurrentPrice   float64                         `json:"current_price,omitempty"`
-	PnLRatio       float64                         `json:"pnl_ratio,omitempty"`
-	PnLUSD         float64                         `json:"pnl_usd,omitempty"`
-	RemainingRatio float64                         `json:"remaining_ratio,omitempty"`
-	Tier1          TierInfo                        `json:"tier1"`
-	Tier2          TierInfo                        `json:"tier2"`
-	Tier3          TierInfo                        `json:"tier3"`
-	TierNotes      string                          `json:"tier_notes,omitempty"`
-	Placeholder    bool                            `json:"placeholder,omitempty"`
-	TierLogs       []database.TierModificationLog  `json:"tier_logs,omitempty"`
-	Events         []database.TradeOperationRecord `json:"events,omitempty"`
-	Status         string                          `json:"status"`
-	ClosedAt       int64                           `json:"closed_at,omitempty"`
-	ExitPrice      float64                         `json:"exit_price,omitempty"`
-	ExitReason     string                          `json:"exit_reason,omitempty"`
+	TradeID            int                             `json:"trade_id"`
+	Symbol             string                          `json:"symbol"`
+	Side               string                          `json:"side"`
+	EntryPrice         float64                         `json:"entry_price"`
+	Amount             float64                         `json:"amount"`
+	InitialAmount      float64                         `json:"initial_amount,omitempty"`
+	Stake              float64                         `json:"stake"`
+	Leverage           float64                         `json:"leverage"`
+	PositionValue      float64                         `json:"position_value,omitempty"`
+	OpenedAt           int64                           `json:"opened_at"`
+	HoldingMs          int64                           `json:"holding_ms"`
+	StopLoss           float64                         `json:"stop_loss,omitempty"`
+	TakeProfit         float64                         `json:"take_profit,omitempty"`
+	CurrentPrice       float64                         `json:"current_price,omitempty"`
+	PnLRatio           float64                         `json:"pnl_ratio,omitempty"`
+	PnLUSD             float64                         `json:"pnl_usd,omitempty"`
+	RealizedPnLRatio   float64                         `json:"realized_pnl_ratio,omitempty"`
+	RealizedPnLUSD     float64                         `json:"realized_pnl_usd,omitempty"`
+	UnrealizedPnLRatio float64                         `json:"unrealized_pnl_ratio,omitempty"`
+	UnrealizedPnLUSD   float64                         `json:"unrealized_pnl_usd,omitempty"`
+	RemainingRatio     float64                         `json:"remaining_ratio,omitempty"`
+	Tier1              TierInfo                        `json:"tier1"`
+	Tier2              TierInfo                        `json:"tier2"`
+	Tier3              TierInfo                        `json:"tier3"`
+	TierNotes          string                          `json:"tier_notes,omitempty"`
+	Placeholder        bool                            `json:"placeholder,omitempty"`
+	TierLogs           []database.TierModificationLog  `json:"tier_logs,omitempty"`
+	Events             []database.TradeOperationRecord `json:"events,omitempty"`
+	Status             string                          `json:"status"`
+	ClosedAt           int64                           `json:"closed_at,omitempty"`
+	ExitPrice          float64                         `json:"exit_price,omitempty"`
+	ExitReason         string                          `json:"exit_reason,omitempty"`
 }
 
 type TierInfo struct {
 	Target float64 `json:"target"`
 	Ratio  float64 `json:"ratio"`
 	Done   bool    `json:"done"`
+}
+
+// PositionPnLValue returns the notional value that should be used when converting
+// a PnL ratio into USD. Prefer the explicit position_value from DB; otherwise
+// fall back to stake * max(leverage, 1).
+func PositionPnLValue(stake, leverage, positionValue float64) float64 {
+	if positionValue > 0 {
+		return positionValue
+	}
+	if stake <= 0 {
+		return 0
+	}
+	if leverage <= 0 {
+		leverage = 1
+	}
+	return stake * leverage
+}
+
+// RemainingPositionValue scales the initial notional value by the ratio of
+// current amount to the initial amount, representing the open portion worth.
+func RemainingPositionValue(stake, leverage, positionValue, amount, initialAmount float64) float64 {
+	base := PositionPnLValue(stake, leverage, positionValue)
+	if base <= 0 {
+		return 0
+	}
+	if initialAmount <= 0 {
+		return base
+	}
+	if amount <= 0 {
+		return 0
+	}
+	frac := amount / initialAmount
+	if frac <= 0 {
+		return 0
+	}
+	if frac > 1 {
+		frac = 1
+	}
+	return base * frac
 }
 
 // TierLog/TradeEvent 兼容旧 HTTP 响应类型，直接复用新表结构。

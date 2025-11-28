@@ -28,33 +28,34 @@ type TextNotifier interface {
 
 // Manager 提供 freqtrade 执行、日志与持仓同步能力（重构版本，基于 live_* 表）。
 type Manager struct {
-	client        *Client
-	cfg           brcfg.FreqtradeConfig
-	logger        Logger
-	posRepo       *PositionRepo
-	posStore      database.LivePositionStore
-	orderRec      market.Recorder
-	balance       Balance
-	traceByKey    map[string]int
-	traceByID     map[int]string
-	pendingDec    map[string]decision.Decision
-	tradeDec      map[int]decision.Decision
-	positions     map[int]Position
-	posCache      map[int]database.LiveOrderWithTiers
-	posCacheMu    sync.RWMutex
-	mu            sync.Mutex
-	horizonName   string
-	notifier      TextNotifier
-	pendingExits  map[int]pendingExit
-	tierWatchOnce sync.Once
-	tierExecMu    sync.Mutex
-	tierExec      map[int]bool
-	posSyncOnce   sync.Once
-	locker        *sync.Map
-	missingPrice  map[string]bool
-	startedAt     time.Time
-	hadTradeSnap  bool
-	hadOpenTrade  bool
+	client           *Client
+	cfg              brcfg.FreqtradeConfig
+	logger           Logger
+	posRepo          *PositionRepo
+	posStore         database.LivePositionStore
+	orderRec         market.Recorder
+	balance          Balance
+	traceByKey       map[string]int
+	traceByID        map[int]string
+	pendingDec       map[string]decision.Decision
+	tradeDec         map[int]decision.Decision
+	pendingSymbolDec map[string][]queuedDecision
+	positions        map[int]Position
+	posCache         map[int]database.LiveOrderWithTiers
+	posCacheMu       sync.RWMutex
+	mu               sync.Mutex
+	horizonName      string
+	notifier         TextNotifier
+	pendingExits     map[int]pendingExit
+	tierWatchOnce    sync.Once
+	tierExecMu       sync.Mutex
+	tierExec         map[int]bool
+	posSyncOnce      sync.Once
+	locker           *sync.Map
+	missingPrice     map[string]bool
+	startedAt        time.Time
+	hadTradeSnap     bool
+	hadOpenTrade     bool
 }
 
 const (
@@ -66,7 +67,7 @@ const (
 	positionSyncStartupDelay = 10 * time.Second
 	hitConfirmDelay          = 2 * time.Second
 	autoCloseRetryInterval   = 30 * time.Second
-	webhookContextTimeout    = 10 * time.Second
+	webhookContextTimeout    = 5 * time.Minute
 )
 
 // Position 缓存 freqtrade 持仓信息。
@@ -87,6 +88,11 @@ type Position struct {
 	ExitPnLUSD   float64
 }
 
+type queuedDecision struct {
+	traceID  string
+	decision decision.Decision
+}
+
 // NewManager 创建 freqtrade 执行管理器。
 func NewManager(client *Client, cfg brcfg.FreqtradeConfig, horizon string, logStore Logger, orderRec market.Recorder, notifier TextNotifier) *Manager {
 	var posStore database.LivePositionStore
@@ -97,24 +103,25 @@ func NewManager(client *Client, cfg brcfg.FreqtradeConfig, horizon string, logSt
 	}
 	initLiveOrderPnL(posStore)
 	return &Manager{
-		client:       client,
-		cfg:          cfg,
-		logger:       logStore,
-		posStore:     posStore,
-		posRepo:      NewPositionRepo(posStore),
-		orderRec:     orderRec,
-		traceByKey:   make(map[string]int),
-		traceByID:    make(map[int]string),
-		pendingDec:   make(map[string]decision.Decision),
-		tradeDec:     make(map[int]decision.Decision),
-		positions:    make(map[int]Position),
-		pendingExits: make(map[int]pendingExit),
-		horizonName:  horizon,
-		notifier:     notifier,
-		tierExec:     make(map[int]bool),
-		locker:       positionLocker,
-		missingPrice: make(map[string]bool),
-		startedAt:    time.Now(),
+		client:           client,
+		cfg:              cfg,
+		logger:           logStore,
+		posStore:         posStore,
+		posRepo:          NewPositionRepo(posStore),
+		orderRec:         orderRec,
+		traceByKey:       make(map[string]int),
+		traceByID:        make(map[int]string),
+		pendingDec:       make(map[string]decision.Decision),
+		tradeDec:         make(map[int]decision.Decision),
+		pendingSymbolDec: make(map[string][]queuedDecision),
+		positions:        make(map[int]Position),
+		pendingExits:     make(map[int]pendingExit),
+		horizonName:      horizon,
+		notifier:         notifier,
+		tierExec:         make(map[int]bool),
+		locker:           positionLocker,
+		missingPrice:     make(map[string]bool),
+		startedAt:        time.Now(),
 	}
 }
 
@@ -494,6 +501,7 @@ func (m *Manager) PositionsForAPI(ctx context.Context, opts PositionListOptions)
 			Side:           strings.ToUpper(p.Order.Side),
 			EntryPrice:     valOrZero(p.Order.Price),
 			Amount:         valOrZero(p.Order.Amount),
+			InitialAmount:  valOrZero(p.Order.InitialAmount),
 			Stake:          valOrZero(p.Order.StakeAmount),
 			Leverage:       valOrZero(p.Order.Leverage),
 			PositionValue:  valOrZero(p.Order.PositionValue),
@@ -512,12 +520,9 @@ func (m *Manager) PositionsForAPI(ctx context.Context, opts PositionListOptions)
 		if p.Order.EndTime != nil {
 			api.ClosedAt = timeToMillis(p.Order.EndTime)
 		}
-		if p.Order.PnLUSD != nil {
-			api.PnLUSD = *p.Order.PnLUSD
-		}
-		if p.Order.PnLRatio != nil {
-			api.PnLRatio = *p.Order.PnLRatio
-		}
+		baseValue := PositionPnLValue(api.Stake, api.Leverage, api.PositionValue)
+		realizedUSD := valOrZero(p.Order.PnLUSD)
+		realizedRatio := valOrZero(p.Order.PnLRatio)
 		if pos, ok := m.positions[p.Order.FreqtradeID]; ok {
 			if pos.ExitPrice > 0 {
 				api.ExitPrice = pos.ExitPrice
@@ -526,10 +531,10 @@ func (m *Manager) PositionsForAPI(ctx context.Context, opts PositionListOptions)
 				api.ExitReason = pos.ExitReason
 			}
 			if pos.ExitPnLRatio != 0 {
-				api.PnLRatio = pos.ExitPnLRatio
-				if api.Stake > 0 {
-					api.PnLUSD = api.PnLRatio * api.Stake
-				}
+				realizedRatio = pos.ExitPnLRatio
+			}
+			if pos.ExitPnLUSD != 0 {
+				realizedUSD = pos.ExitPnLUSD
 			}
 			if pos.Closed && !pos.OpenedAt.IsZero() && !pos.ClosedAt.IsZero() {
 				api.HoldingMs = pos.ClosedAt.Sub(pos.OpenedAt).Milliseconds()
@@ -537,16 +542,13 @@ func (m *Manager) PositionsForAPI(ctx context.Context, opts PositionListOptions)
 				api.Tier1.Done, api.Tier2.Done, api.Tier3.Done = true, true, true
 			}
 		}
-		// 若 DB 中已有累计盈亏，则直接使用
-		if api.PnLUSD == 0 && p.Order.PnLUSD != nil {
-			api.PnLUSD = *p.Order.PnLUSD
+		if realizedRatio == 0 && baseValue > 0 && realizedUSD != 0 {
+			realizedRatio = realizedUSD / baseValue
 		}
-		if api.PnLRatio == 0 && p.Order.PnLRatio != nil {
-			api.PnLRatio = *p.Order.PnLRatio
-			if api.PnLUSD == 0 && api.Stake > 0 {
-				api.PnLUSD = api.PnLRatio * api.Stake
-			}
-		}
+		api.RealizedPnLUSD = realizedUSD
+		api.RealizedPnLRatio = realizedRatio
+		api.PnLUSD = realizedUSD
+		api.PnLRatio = realizedRatio
 		// CurrentPrice/ExitPrice 可结合行情或事件补充，这里以存量信息为准。
 		if opts.IncludeLogs && m.posRepo != nil {
 			limit := opts.LogsLimit
@@ -645,6 +647,11 @@ func (m *Manager) CacheDecision(traceID string, d decision.Decision) string {
 	id := m.ensureTrace(traceID)
 	m.mu.Lock()
 	m.pendingDec[id] = d
+	if side := deriveSide(d.Action); side != "" {
+		if key := freqtradeKey(d.Symbol, side); key != "" {
+			m.pendingSymbolDec[key] = append(m.pendingSymbolDec[key], queuedDecision{traceID: id, decision: d})
+		}
+	}
 	m.mu.Unlock()
 	return id
 }
@@ -656,8 +663,7 @@ func (m *Manager) bindDecision(tradeID int, traceID string) {
 	id := m.ensureTrace(traceID)
 	m.mu.Lock()
 	if dec, ok := m.pendingDec[id]; ok {
-		delete(m.pendingDec, id)
-		m.tradeDec[tradeID] = dec
+		m.attachDecisionLocked(tradeID, id, dec)
 	}
 	m.mu.Unlock()
 }
@@ -675,5 +681,79 @@ func (m *Manager) forgetDecision(tradeID int) {
 	}
 	m.mu.Lock()
 	delete(m.tradeDec, tradeID)
+	m.mu.Unlock()
+}
+
+func (m *Manager) bindDecisionBySymbol(tradeID int, symbol, side string) bool {
+	key := freqtradeKey(symbol, side)
+	if key == "" {
+		return false
+	}
+	m.mu.Lock()
+	queue := m.pendingSymbolDec[key]
+	if len(queue) == 0 {
+		m.mu.Unlock()
+		return false
+	}
+	entry := queue[0]
+	if len(queue) == 1 {
+		delete(m.pendingSymbolDec, key)
+	} else {
+		m.pendingSymbolDec[key] = queue[1:]
+	}
+	m.attachDecisionLocked(tradeID, entry.traceID, entry.decision)
+	m.mu.Unlock()
+	return true
+}
+
+func (m *Manager) attachDecisionLocked(tradeID int, traceID string, dec decision.Decision) {
+	m.tradeDec[tradeID] = dec
+	if traceID != "" {
+		m.traceByID[tradeID] = traceID
+		delete(m.pendingDec, traceID)
+	}
+	if traceID != "" {
+		m.removeQueuedDecisionLocked(traceID, dec)
+	}
+}
+
+func (m *Manager) removeQueuedDecisionLocked(traceID string, dec decision.Decision) {
+	if traceID == "" {
+		return
+	}
+	side := deriveSide(dec.Action)
+	key := freqtradeKey(dec.Symbol, side)
+	if key == "" {
+		return
+	}
+	queue := m.pendingSymbolDec[key]
+	if len(queue) == 0 {
+		return
+	}
+	idx := -1
+	for i, entry := range queue {
+		if entry.traceID == traceID {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return
+	}
+	queue = append(queue[:idx], queue[idx+1:]...)
+	if len(queue) == 0 {
+		delete(m.pendingSymbolDec, key)
+	} else {
+		m.pendingSymbolDec[key] = queue
+	}
+}
+
+func (m *Manager) discardQueuedDecision(traceID string) {
+	id := m.ensureTrace(traceID)
+	m.mu.Lock()
+	if dec, ok := m.pendingDec[id]; ok {
+		delete(m.pendingDec, id)
+		m.removeQueuedDecisionLocked(id, dec)
+	}
 	m.mu.Unlock()
 }

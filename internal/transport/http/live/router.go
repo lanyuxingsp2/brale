@@ -298,7 +298,8 @@ func (r *Router) handleFreqtradePositionDetail(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "position not found (maybe too old)"})
 		return
 	}
-	logger.Infof("[api] freqtrade position detail ip=%s trade_id=%d symbol=%s side=%s", c.ClientIP(), tradeID, strings.ToLower(target.Side))
+	logger.Infof("[api] freqtrade position detail ip=%s trade_id=%d symbol=%s side=%s",
+		c.ClientIP(), tradeID, strings.ToUpper(strings.TrimSpace(target.Symbol)), strings.ToLower(strings.TrimSpace(target.Side)))
 	c.JSON(http.StatusOK, gin.H{
 		"position": target,
 	})

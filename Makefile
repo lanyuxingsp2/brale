@@ -61,6 +61,8 @@ logs:
 	$(DOCKER_COMPOSE) logs -f
 
 start:
+	@echo "停止现有容器..."
+	-$(DOCKER_COMPOSE) down
 	@echo "清理运行目录：$(CURDIR)/running_log"
 	sudo rm -rf $(CURDIR)/running_log
 	$(MAKE) prepare-dirs

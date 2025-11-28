@@ -207,8 +207,16 @@ func (c *Client) GetBalance(ctx context.Context) (Balance, error) {
 	if v, ok := raw["stake_currency"].(string); ok {
 		b.StakeCurrency = strings.ToUpper(strings.TrimSpace(v))
 	}
-	if v, ok := raw["total"]; ok {
-		b.Total = parseAnyFloat(v)
+	if v, ok := raw["balance"]; ok {
+		b.Balance = parseAnyFloat(v)
+		if b.Balance > 0 {
+			b.Total = b.Balance
+		}
+	}
+	if b.Total == 0 {
+		if v, ok := raw["total"]; ok {
+			b.Total = parseAnyFloat(v)
+		}
 	}
 	if v, ok := raw["available"]; ok {
 		b.Available = parseAnyFloat(v)
@@ -218,9 +226,6 @@ func (c *Client) GetBalance(ctx context.Context) (Balance, error) {
 	}
 	if v, ok := raw["used"]; ok {
 		b.Used = parseAnyFloat(v)
-	}
-	if v, ok := raw["balance"]; ok {
-		b.Balance = parseAnyFloat(v)
 	}
 	if wallets, ok := raw["wallets"].(map[string]any); ok {
 		b.Wallets = make(map[string]float64, len(wallets))

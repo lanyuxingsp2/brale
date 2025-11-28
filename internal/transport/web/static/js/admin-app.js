@@ -32,6 +32,36 @@
     return `${(val * 100).toFixed(2)}%`;
   };
 
+  const normalizeStatus = (status) => (status || '').toString().trim().toLowerCase();
+
+  const statusLabel = (status) => {
+    const s = normalizeStatus(status);
+    switch (s) {
+      case 'closed':
+        return '已平仓';
+      case 'partial':
+      case 'closing_partial':
+        return '部分平仓';
+      case 'opening':
+      case 'closing_full':
+        return '待确认';
+      case 'open':
+      case 'opened':
+      case 'active':
+        return '进行中';
+      default:
+        return s ? s.toUpperCase() : 'UNKNOWN';
+    }
+  };
+
+  const statusBadgeClass = (status) => {
+    const s = normalizeStatus(status);
+    if (s === 'closed') return 'status-closed';
+    if (s === 'partial' || s === 'closing_partial') return 'status-partial';
+    if (s === 'opening' || s === 'closing_full' || s === 'pending') return 'status-pending';
+    return 'status-open';
+  };
+
   const formatDuration = (ms) => {
     if (!ms || Number.isNaN(ms)) return '--';
     const d = Number(ms);
@@ -603,6 +633,8 @@
         formatNumber,
         formatUSD,
         formatPercent,
+        statusLabel,
+        statusBadgeClass,
         tierRows,
         decisionHeadline,
         decisionHeadlineAction,

@@ -266,6 +266,9 @@ func (s *LiveService) tickDecision(ctx context.Context) error {
 		s.applyTradingDefaults(&d)
 		if err := decision.Validate(&d); err != nil {
 			logger.Warnf("AI 决策不合规，已忽略: %v | %+v", err, d)
+			if strings.EqualFold(d.Action, "update_tiers") && strings.Contains(err.Error(), "需提供 tiers") {
+				logger.Warnf("AI 决策缺少 tiers，附: %+v", d.Tiers)
+			}
 			continue
 		}
 		if validateIv != "" {
@@ -939,12 +942,19 @@ func (s *LiveService) ListFreqtradePositions(ctx context.Context, opts freqexec.
 	cache := make(map[string]float64)
 	for i := range res.Positions {
 		pos := &res.Positions[i]
+		baseValue := freqexec.PositionPnLValue(pos.Stake, pos.Leverage, pos.PositionValue)
+		pos.PnLUSD = pos.RealizedPnLUSD
+		pos.PnLRatio = pos.RealizedPnLRatio
+		pos.UnrealizedPnLUSD = 0
+		pos.UnrealizedPnLRatio = 0
 		if strings.EqualFold(pos.Status, "closed") {
 			if pos.ExitPrice > 0 {
 				pos.CurrentPrice = pos.ExitPrice
 			}
-			if pos.PnLUSD == 0 && pos.Stake > 0 && pos.PnLRatio != 0 {
-				pos.PnLUSD = pos.PnLRatio * pos.Stake
+			if pos.PnLUSD == 0 && pos.PnLRatio != 0 {
+				if value := freqexec.PositionPnLValue(pos.Stake, pos.Leverage, pos.PositionValue); value > 0 {
+					pos.PnLUSD = pos.PnLRatio * value
+				}
 			}
 			continue
 		}
@@ -967,9 +977,15 @@ func (s *LiveService) ListFreqtradePositions(ctx context.Context, opts freqexec.
 		} else {
 			ratio = (price - pos.EntryPrice) / pos.EntryPrice
 		}
-		pos.PnLRatio = ratio
-		if pos.Stake > 0 {
-			pos.PnLUSD = ratio * pos.Stake
+		pos.UnrealizedPnLRatio = ratio
+		if value := freqexec.RemainingPositionValue(pos.Stake, pos.Leverage, pos.PositionValue, pos.Amount, pos.InitialAmount); value > 0 {
+			pos.UnrealizedPnLUSD = ratio * value
+		}
+		pos.PnLUSD = pos.RealizedPnLUSD + pos.UnrealizedPnLUSD
+		if baseValue > 0 {
+			pos.PnLRatio = pos.PnLUSD / baseValue
+		} else if pos.PnLRatio == 0 {
+			pos.PnLRatio = pos.RealizedPnLRatio
 		}
 	}
 	return res, nil

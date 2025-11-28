@@ -47,6 +47,9 @@ func (m *Manager) handleEntry(ctx context.Context, msg WebhookMessage, filled bo
 	now := time.Now()
 
 	// 仅缓存，不重复写 DB，entry_fill 后再落库。
+	if _, ok := m.decisionForTrade(tradeID); !ok {
+		m.bindDecisionBySymbol(tradeID, symbol, side)
+	}
 	m.mu.Lock()
 	m.positions[tradeID] = pos
 	m.mu.Unlock()
@@ -271,13 +274,69 @@ func (m *Manager) handleExit(ctx context.Context, msg WebhookMessage, event stri
 		rawData = rawData + "\n" + exitRaw
 	}
 
-	pnlRatio := parseProfitRatio(msg.ProfitRatio)
-	pnlUSD := 0.0
-	if val := parseAnyFloat(msg.ProfitAbs); val != 0 {
-		pnlUSD = val
-	} else if pnlRatio != 0 && stake > 0 {
-		pnlUSD = pnlRatio * stake
+	entryPrice := valOrZero(orderRec.Price)
+	if entryPrice <= 0 {
+		entryPrice = pos.EntryPrice
 	}
+	baseStake := stake
+	if baseStake <= 0 {
+		baseStake = valOrZero(orderRec.StakeAmount)
+	}
+	if baseStake <= 0 {
+		baseStake = pos.Stake
+	}
+	if baseStake <= 0 {
+		posVal := valOrZero(orderRec.PositionValue)
+		lev := valOrZero(orderRec.Leverage)
+		if posVal > 0 && lev > 0 {
+			baseStake = posVal / lev
+		}
+	}
+	initialAmount := valOrZero(orderRec.InitialAmount)
+	if initialAmount <= 0 {
+		initialAmount = valOrZero(orderRec.Amount) + valOrZero(orderRec.ClosedAmount)
+		if initialAmount <= 0 {
+			initialAmount = prevAmount + prevClosed
+		}
+	}
+	portion := 1.0
+	if initialAmount > 0 && fill > 0 {
+		portion = math.Min(fill, initialAmount) / initialAmount
+		if portion < 0 {
+			portion = 0
+		} else if portion > 1 {
+			portion = 1
+		}
+	}
+	effectiveStake := baseStake
+	if portion > 0 && portion < 1 && effectiveStake > 0 {
+		effectiveStake = effectiveStake * portion
+	}
+	pnlRatio := parseProfitRatio(msg.ProfitRatio)
+	pnlUSD := parseAnyFloat(msg.ProfitAbs)
+	if pnlRatio == 0 && entryPrice > 0 && closePrice > 0 {
+		if strings.EqualFold(side, "short") {
+			pnlRatio = (entryPrice - closePrice) / entryPrice
+		} else {
+			pnlRatio = (closePrice - entryPrice) / entryPrice
+		}
+	}
+	if pnlUSD == 0 && pnlRatio != 0 {
+		stakeForCalc := effectiveStake
+		if stakeForCalc <= 0 {
+			stakeForCalc = baseStake
+		}
+		if stakeForCalc <= 0 {
+			stakeForCalc = stake
+		}
+		if stakeForCalc > 0 {
+			pnlUSD = pnlRatio * stakeForCalc
+		}
+	}
+	prevPnLUSD := valOrZero(orderRec.PnLUSD)
+	prevPnLRatio := valOrZero(orderRec.PnLRatio)
+	realizedPnLUSD := prevPnLUSD + pnlUSD
+	realizedPnLRatio := prevPnLRatio + pnlRatio
 
 	updatedOrder := database.LiveOrderRecord{
 		FreqtradeID:   tradeID,
@@ -297,17 +356,17 @@ func (m *Manager) handleExit(ctx context.Context, msg WebhookMessage, event stri
 		CreatedAt:     orderRec.CreatedAt,
 		UpdatedAt:     now,
 		RawData:       rawData,
-		PnLRatio:      ptrFloat(pnlRatio),
-		PnLUSD:        ptrFloat(pnlUSD),
+		PnLRatio:      nil,
+		PnLUSD:        nil,
 	}
 	if updatedOrder.StakeAmount == nil && stake > 0 {
 		updatedOrder.StakeAmount = ptrFloat(stake)
 	}
-	if pnlRatio != 0 {
-		updatedOrder.PnLRatio = ptrFloat(pnlRatio)
+	if realizedPnLRatio != 0 {
+		updatedOrder.PnLRatio = ptrFloat(realizedPnLRatio)
 	}
-	if pnlUSD != 0 {
-		updatedOrder.PnLUSD = ptrFloat(pnlUSD)
+	if realizedPnLUSD != 0 {
+		updatedOrder.PnLUSD = ptrFloat(realizedPnLUSD)
 	}
 	if updatedOrder.CreatedAt.IsZero() {
 		updatedOrder.CreatedAt = now
@@ -390,9 +449,9 @@ func (m *Manager) handleExit(ctx context.Context, msg WebhookMessage, event stri
 	}
 
 	if newStatus == database.LiveOrderStatusClosed {
-		closedPos := m.markPositionClosed(tradeID, symbol, side, closePrice, stake, msg.ExitReason, endTs, pnlRatio)
+		closedPos := m.markPositionClosed(tradeID, symbol, side, closePrice, stake, msg.ExitReason, endTs, realizedPnLRatio)
 		closedPos.Amount = 0
-		closedPos.ExitPnLUSD = pnlUSD
+		closedPos.ExitPnLUSD = realizedPnLUSD
 		m.mu.Lock()
 		m.positions[tradeID] = closedPos
 		m.mu.Unlock()
@@ -406,8 +465,8 @@ func (m *Manager) handleExit(ctx context.Context, msg WebhookMessage, event stri
 		cur.Side = side
 		cur.Amount = newAmount
 		cur.Stake = stake
-		cur.ExitPnLRatio += pnlRatio
-		cur.ExitPnLUSD += pnlUSD
+		cur.ExitPnLRatio = realizedPnLRatio
+		cur.ExitPnLUSD = realizedPnLUSD
 		m.positions[tradeID] = cur
 		m.mu.Unlock()
 	}
