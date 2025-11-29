@@ -57,7 +57,8 @@ func (m *Manager) SyncOpenPositions(ctx context.Context) (int, error) {
 	}
 	logger.Infof("freqtrade sync: got %d trades from freqtrade", len(trades))
 	for i, tr := range trades {
-		logger.Infof("freqtrade sync: trade[%d] raw=%+v", i, tr)
+		logger.Infof("freqtrade sync: trade[%d] ID=%d Pair=%s IsOpen=%v Amount=%.6f CloseProfit=%.6f(%.2f) ProfitRatio=%.6f(%.2f)",
+			i, tr.ID, tr.Pair, tr.IsOpen, tr.Amount, tr.CloseProfit, tr.CloseProfitAbs, tr.ProfitRatio, tr.ProfitAbs)
 	}
 	if len(trades) > 0 {
 		m.hadTradeSnap = true
@@ -111,8 +112,8 @@ func (m *Manager) SyncOpenPositions(ctx context.Context) (int, error) {
 			entry := tr.OpenRate
 			now := time.Now()
 			start := parseFreqtradeTime(tr.OpenDate)
-		existing, existed := activeMap[tradeID]
-		order := existing.Order
+			existing, existed := activeMap[tradeID]
+			order := existing.Order
 			if !existed {
 				order = database.LiveOrderRecord{
 					FreqtradeID: tradeID,
@@ -131,47 +132,66 @@ func (m *Manager) SyncOpenPositions(ctx context.Context) (int, error) {
 			order.Leverage = ptrFloat(tr.Leverage)
 			order.PositionValue = ptrFloat(tr.StakeAmount * tr.Leverage)
 			order.Price = ptrFloat(entry)
-		// 若 freqtrade 仍然持仓，则重置已平仓数量。
-		if tr.IsOpen {
-			order.ClosedAmount = ptrFloat(0)
-		} else if order.ClosedAmount == nil {
-			order.ClosedAmount = ptrFloat(valOrZero(existing.Order.ClosedAmount))
-		}
+			if tr.CurrentRate > 0 {
+				order.CurrentPrice = ptrFloat(tr.CurrentRate)
+			}
+			// 优先使用 profit_ratio/profit_abs (浮动盈亏)，若无则回退到 close_profit (已实现盈亏，通常为 0)
+			pnlRatio := tr.ProfitRatio
+			pnlAbs := tr.ProfitAbs
+			if pnlRatio == 0 && tr.CloseProfit != 0 {
+				pnlRatio = tr.CloseProfit
+			}
+			if pnlAbs == 0 && tr.CloseProfitAbs != 0 {
+				pnlAbs = tr.CloseProfitAbs
+			}
+
+			order.CurrentProfitRatio = ptrFloat(pnlRatio)
+			order.CurrentProfitAbs = ptrFloat(pnlAbs)
+			order.UnrealizedPnLRatio = ptrFloat(pnlRatio)
+			order.UnrealizedPnLUSD = ptrFloat(pnlAbs)
+			syncTime := now
+			order.LastStatusSync = &syncTime
+			// 若 freqtrade 仍然持仓，则重置已平仓数量。
+			if tr.IsOpen {
+				order.ClosedAmount = ptrFloat(0)
+			} else if order.ClosedAmount == nil {
+				order.ClosedAmount = ptrFloat(valOrZero(existing.Order.ClosedAmount))
+			}
 			if order.StartTime == nil || order.StartTime.IsZero() {
 				order.StartTime = &start
 			}
 			if order.CreatedAt.IsZero() {
 				order.CreatedAt = now
 			}
-		order.UpdatedAt = now
-		order.RawData = marshalRaw(tr)
+			order.UpdatedAt = now
+			order.RawData = marshalRaw(tr)
 
-		if order.Status == database.LiveOrderStatusOpening && tr.IsOpen && tr.Amount > 0 {
-			order.Status = database.LiveOrderStatusOpen
-		}
-		if order.Status == database.LiveOrderStatusClosed && tr.IsOpen && tr.Amount > 0 {
-			order.Status = database.LiveOrderStatusOpen
-			order.ClosedAmount = ptrFloat(0)
-			if order.EndTime != nil {
-				order.EndTime = nil
-			}
-		}
-		if order.Status == 0 {
-			if tr.Amount > 0 {
+			if order.Status == database.LiveOrderStatusOpening && tr.IsOpen && tr.Amount > 0 {
 				order.Status = database.LiveOrderStatusOpen
-			} else {
-				order.Status = database.LiveOrderStatusOpening
 			}
-		}
-		// 以 freqtrade 回传为准，确保 is_open/amount>0 一律标记为 open。
-		if isOpen {
-			order.Status = database.LiveOrderStatusOpen
-		}
+			if order.Status == database.LiveOrderStatusClosed && tr.IsOpen && tr.Amount > 0 {
+				order.Status = database.LiveOrderStatusOpen
+				order.ClosedAmount = ptrFloat(0)
+				if order.EndTime != nil {
+					order.EndTime = nil
+				}
+			}
+			if order.Status == 0 {
+				if tr.Amount > 0 {
+					order.Status = database.LiveOrderStatusOpen
+				} else {
+					order.Status = database.LiveOrderStatusOpening
+				}
+			}
+			// 以 freqtrade 回传为准，确保 is_open/amount>0 一律标记为 open。
+			if isOpen {
+				order.Status = database.LiveOrderStatusOpen
+			}
 
-		// tiers：已有持仓时保持本地记录，不改动 tp/sl/完成状态。
-		tier := buildPlaceholderTiers(tradeID, strings.ToUpper(symbol))
-		if existed {
-			tier = existing.Tiers
+			// tiers：已有持仓时保持本地记录，不改动 tp/sl/完成状态。
+			tier := buildPlaceholderTiers(tradeID, strings.ToUpper(symbol))
+			if existed {
+				tier = existing.Tiers
 			} else if m.posRepo != nil {
 				if storedOrder, storedTier, ok, err := m.posRepo.GetPosition(ctx, tradeID); err == nil && ok {
 					existing = database.LiveOrderWithTiers{Order: storedOrder, Tiers: storedTier}
@@ -206,12 +226,12 @@ func (m *Manager) SyncOpenPositions(ctx context.Context) (int, error) {
 				}
 			}
 
-		logger.Debugf("freqtrade sync: upsert freqtrade trade=%d symbol=%s side=%s entry=%.4f amount=%.6f existed_local=%v tiers_complete=%v status=%s", tradeID, symbol, side, entry, tr.Amount, existed, hasCompleteTier(tier), statusText(order.Status))
-		if err := m.posRepo.SavePosition(ctx, order, tier); err == nil {
-			m.updateCacheOrderTiers(order, tier)
-		} else {
-			// 回退到非事务写入，避免因兼容问题丢失数据。
-			_ = m.posRepo.UpsertOrder(ctx, order)
+			logger.Debugf("freqtrade sync: upsert freqtrade trade=%d symbol=%s side=%s entry=%.4f amount=%.6f existed_local=%v tiers_complete=%v status=%s", tradeID, symbol, side, entry, tr.Amount, existed, hasCompleteTier(tier), statusText(order.Status))
+			if err := m.posRepo.SavePosition(ctx, order, tier); err == nil {
+				m.updateCacheOrderTiers(order, tier)
+			} else {
+				// 回退到非事务写入，避免因兼容问题丢失数据。
+				_ = m.posRepo.UpsertOrder(ctx, order)
 				_ = m.posRepo.UpsertTiers(ctx, tier)
 				m.updateCacheOrderTiers(order, tier)
 			}
@@ -240,20 +260,20 @@ func (m *Manager) SyncOpenPositions(ctx context.Context) (int, error) {
 				m.posRepo.AppendOperation(ctx, op)
 			}
 
-		m.mu.Lock()
-		m.positions[tradeID] = Position{
-			TradeID:    tradeID,
-			Symbol:     symbol,
+			m.mu.Lock()
+			m.positions[tradeID] = Position{
+				TradeID:    tradeID,
+				Symbol:     symbol,
 				Side:       side,
 				Amount:     tr.Amount,
 				Stake:      tr.StakeAmount,
 				Leverage:   tr.Leverage,
 				EntryPrice: entry,
-			OpenedAt:   start,
-		}
-		m.mu.Unlock()
-		delete(activeMap, tradeID)
-		count++
+				OpenedAt:   start,
+			}
+			m.mu.Unlock()
+			delete(activeMap, tradeID)
+			count++
 		}()
 	}
 

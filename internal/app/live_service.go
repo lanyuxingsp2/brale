@@ -70,6 +70,7 @@ func (s *LiveService) Run(ctx context.Context) error {
 			return s.latestPriceQuote(ctx, sym)
 		})
 		s.freqManager.StartPositionSync(ctx)
+		s.freqManager.StartFastStatusSync(ctx)
 	}
 
 	cfg := s.cfg
@@ -763,6 +764,7 @@ func (s *LiveService) accountSnapshot() decision.AccountSnapshot {
 	return decision.AccountSnapshot{
 		Total:     bal.Total,
 		Available: bal.Available,
+		Used:      bal.Used,
 		Currency:  currency,
 		UpdatedAt: bal.UpdatedAt,
 	}
@@ -932,63 +934,7 @@ func (s *LiveService) ListFreqtradePositions(ctx context.Context, opts freqexec.
 	if s == nil || s.freqManager == nil {
 		return result, nil
 	}
-	res, err := s.freqManager.PositionsForAPI(ctx, opts)
-	if err != nil {
-		return res, err
-	}
-	if len(res.Positions) == 0 {
-		return res, nil
-	}
-	cache := make(map[string]float64)
-	for i := range res.Positions {
-		pos := &res.Positions[i]
-		baseValue := freqexec.PositionPnLValue(pos.Stake, pos.Leverage, pos.PositionValue)
-		pos.PnLUSD = pos.RealizedPnLUSD
-		pos.PnLRatio = pos.RealizedPnLRatio
-		pos.UnrealizedPnLUSD = 0
-		pos.UnrealizedPnLRatio = 0
-		if strings.EqualFold(pos.Status, "closed") {
-			if pos.ExitPrice > 0 {
-				pos.CurrentPrice = pos.ExitPrice
-			}
-			if pos.PnLUSD == 0 && pos.PnLRatio != 0 {
-				if value := freqexec.PositionPnLValue(pos.Stake, pos.Leverage, pos.PositionValue); value > 0 {
-					pos.PnLUSD = pos.PnLRatio * value
-				}
-			}
-			continue
-		}
-		sym := strings.ToUpper(strings.TrimSpace(pos.Symbol))
-		if sym == "" {
-			continue
-		}
-		price, ok := cache[sym]
-		if !ok {
-			price = s.latestPrice(ctx, sym)
-			cache[sym] = price
-		}
-		pos.CurrentPrice = price
-		if price <= 0 || pos.EntryPrice <= 0 {
-			continue
-		}
-		var ratio float64
-		if strings.EqualFold(pos.Side, "SHORT") {
-			ratio = (pos.EntryPrice - price) / pos.EntryPrice
-		} else {
-			ratio = (price - pos.EntryPrice) / pos.EntryPrice
-		}
-		pos.UnrealizedPnLRatio = ratio
-		if value := freqexec.RemainingPositionValue(pos.Stake, pos.Leverage, pos.PositionValue, pos.Amount, pos.InitialAmount); value > 0 {
-			pos.UnrealizedPnLUSD = ratio * value
-		}
-		pos.PnLUSD = pos.RealizedPnLUSD + pos.UnrealizedPnLUSD
-		if baseValue > 0 {
-			pos.PnLRatio = pos.PnLUSD / baseValue
-		} else if pos.PnLRatio == 0 {
-			pos.PnLRatio = pos.RealizedPnLRatio
-		}
-	}
-	return res, nil
+	return s.freqManager.PositionsForAPI(ctx, opts)
 }
 
 // CloseFreqtradePosition implements livehttp.FreqtradeWebhookHandler.

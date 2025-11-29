@@ -16,6 +16,14 @@ func (s *DecisionLogStore) AddOrderPnLColumns() error {
 	queries := []string{
 		"ALTER TABLE live_orders ADD COLUMN pnl_ratio REAL DEFAULT 0",
 		"ALTER TABLE live_orders ADD COLUMN pnl_usd REAL DEFAULT 0",
+		"ALTER TABLE live_orders ADD COLUMN current_price REAL DEFAULT 0",
+		"ALTER TABLE live_orders ADD COLUMN current_profit_ratio REAL DEFAULT 0",
+		"ALTER TABLE live_orders ADD COLUMN current_profit_abs REAL DEFAULT 0",
+		"ALTER TABLE live_orders ADD COLUMN unrealized_pnl_ratio REAL DEFAULT 0",
+		"ALTER TABLE live_orders ADD COLUMN unrealized_pnl_usd REAL DEFAULT 0",
+		"ALTER TABLE live_orders ADD COLUMN realized_pnl_ratio REAL DEFAULT 0",
+		"ALTER TABLE live_orders ADD COLUMN realized_pnl_usd REAL DEFAULT 0",
+		"ALTER TABLE live_orders ADD COLUMN last_status_sync INTEGER",
 	}
 	for _, q := range queries {
 		if _, err := db.ExecContext(context.Background(), q); err != nil {
@@ -25,4 +33,3 @@ func (s *DecisionLogStore) AddOrderPnLColumns() error {
 	}
 	return nil
 }
-

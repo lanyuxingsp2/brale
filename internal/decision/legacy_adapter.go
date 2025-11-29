@@ -768,11 +768,8 @@ func (e *LegacyEngineAdapter) appendCurrentPositions(b *strings.Builder, account
 		if account.Available > 0 {
 			line += fmt.Sprintf(" · 可用: %.2f", account.Available)
 		}
-		if account.Total > 0 && account.Available >= 0 {
-			used := account.Total - account.Available
-			if used > 0 {
-				line += fmt.Sprintf(" · 已占用: %.2f", used)
-			}
+		if account.Used > 0 {
+			line += fmt.Sprintf(" · 已占用: %.2f", account.Used)
 		}
 		b.WriteString(line + "\n")
 	}

@@ -368,6 +368,10 @@ func (m *Manager) handleExit(ctx context.Context, msg WebhookMessage, event stri
 	if realizedPnLUSD != 0 {
 		updatedOrder.PnLUSD = ptrFloat(realizedPnLUSD)
 	}
+	updatedOrder.RealizedPnLRatio = ptrFloat(realizedPnLRatio)
+	updatedOrder.RealizedPnLUSD = ptrFloat(realizedPnLUSD)
+	updatedOrder.UnrealizedPnLRatio = ptrFloat(0)
+	updatedOrder.UnrealizedPnLUSD = ptrFloat(0)
 	if updatedOrder.CreatedAt.IsZero() {
 		updatedOrder.CreatedAt = now
 	}
@@ -380,6 +384,23 @@ func (m *Manager) handleExit(ctx context.Context, msg WebhookMessage, event stri
 	}
 	if newStatus == database.LiveOrderStatusClosed {
 		updatedOrder.Amount = ptrFloat(0)
+	}
+	syncAt := time.Now()
+	updatedOrder.LastStatusSync = &syncAt
+
+	finalTrade, detailErr := m.fetchTradeDetailWithRetry(ctx, tradeID)
+	if detailErr == nil && finalTrade != nil {
+		if finalTrade.CloseRate > 0 {
+			updatedOrder.CurrentPrice = ptrFloat(finalTrade.CloseRate)
+		}
+		updatedOrder.CurrentProfitRatio = ptrFloat(finalTrade.CloseProfit)
+		updatedOrder.CurrentProfitAbs = ptrFloat(finalTrade.CloseProfitAbs)
+		updatedOrder.RealizedPnLRatio = ptrFloat(finalTrade.CloseProfit)
+		updatedOrder.RealizedPnLUSD = ptrFloat(finalTrade.CloseProfitAbs)
+		syncAt = time.Now()
+		updatedOrder.LastStatusSync = &syncAt
+	} else if detailErr != nil && updatedOrder.Status == database.LiveOrderStatusClosed {
+		updatedOrder.Status = database.LiveOrderStatusRetrying
 	}
 
 	if tierRec.FreqtradeID == 0 {

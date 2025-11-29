@@ -27,9 +27,11 @@ func (r *PositionRepo) UpsertOrder(ctx context.Context, rec database.LiveOrderRe
 	if r == nil || r.store == nil {
 		return fmt.Errorf("live position store 未初始化")
 	}
-	logger.Infof("PositionRepo: 写入 live_orders trade=%d 标的=%s 方向=%s 状态=%s 数量=%.6f 成交价=%.4f 仓位=%.4f 杠杆=%.2f 已平仓=%.6f",
+	logger.Infof("PositionRepo: 写入 live_orders trade=%d 标的=%s 方向=%s 状态=%s 数量=%.6f 成交价=%.4f 仓位=%.4f 杠杆=%.2f 已平仓=%.6f 未实现盈亏比例=%.4f%% 未实现盈亏金额=%.2f 已实现盈亏比例=%.4f%% 已实现盈亏金额=%.2f",
 		rec.FreqtradeID, strings.ToUpper(rec.Symbol), strings.ToLower(rec.Side), statusText(rec.Status),
-		valOrZero(rec.Amount), valOrZero(rec.Price), valOrZero(rec.StakeAmount), valOrZero(rec.Leverage), valOrZero(rec.ClosedAmount))
+		valOrZero(rec.Amount), valOrZero(rec.Price), valOrZero(rec.StakeAmount), valOrZero(rec.Leverage), valOrZero(rec.ClosedAmount),
+		valOrZero(rec.UnrealizedPnLRatio)*100, valOrZero(rec.UnrealizedPnLUSD),
+		valOrZero(rec.RealizedPnLRatio)*100, valOrZero(rec.RealizedPnLUSD))
 	return r.store.UpsertLiveOrder(ctx, rec)
 }
 
@@ -49,8 +51,10 @@ func (r *PositionRepo) SavePosition(ctx context.Context, order database.LiveOrde
 	if r == nil || r.store == nil {
 		return fmt.Errorf("live position store 未初始化")
 	}
-	logger.Infof("PositionRepo: 原子写入订单+tiers trade=%d 标的=%s 状态=%s 止盈=%.4f 止损=%.4f 开仓价=%.4f 数量=%.6f",
-		order.FreqtradeID, strings.ToUpper(order.Symbol), statusText(order.Status), tier.TakeProfit, tier.StopLoss, valOrZero(order.Price), valOrZero(order.Amount))
+	logger.Infof("PositionRepo: 原子写入订单+tiers trade=%d 标的=%s 状态=%s 止盈=%.4f 止损=%.4f 开仓价=%.4f 数量=%.6f 未实现盈亏比例=%.4f%% 未实现盈亏金额=%.2f 已实现盈亏比例=%.4f%% 已实现盈亏金额=%.2f",
+		order.FreqtradeID, strings.ToUpper(order.Symbol), statusText(order.Status), tier.TakeProfit, tier.StopLoss, valOrZero(order.Price), valOrZero(order.Amount),
+		valOrZero(order.UnrealizedPnLRatio)*100, valOrZero(order.UnrealizedPnLUSD),
+		valOrZero(order.RealizedPnLRatio)*100, valOrZero(order.RealizedPnLUSD))
 	return r.store.SavePosition(ctx, order, tier)
 }
 

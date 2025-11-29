@@ -51,6 +51,7 @@ type Manager struct {
 	tierExecMu       sync.Mutex
 	tierExec         map[int]bool
 	posSyncOnce      sync.Once
+	fastSyncOnce     sync.Once
 	locker           *sync.Map
 	missingPrice     map[string]bool
 	startedAt        time.Time
@@ -65,6 +66,9 @@ const (
 	tierWatchInterval        = 2 * time.Second
 	positionSyncInterval     = time.Minute
 	positionSyncStartupDelay = 10 * time.Second
+	fastStatusInterval       = 5 * time.Second
+	statusRetryInterval      = 2 * time.Second
+	statusRetryMax           = 5
 	hitConfirmDelay          = 2 * time.Second
 	autoCloseRetryInterval   = 30 * time.Second
 	webhookContextTimeout    = 5 * time.Minute
@@ -202,6 +206,16 @@ func (m *Manager) StartPositionSync(ctx context.Context) {
 	}
 	m.posSyncOnce.Do(func() {
 		go m.runPositionSync(ctx)
+	})
+}
+
+// StartFastStatusSync 启动快速 /status 轮询，刷新盈亏字段。
+func (m *Manager) StartFastStatusSync(ctx context.Context) {
+	if m == nil {
+		return
+	}
+	m.fastSyncOnce.Do(func() {
+		go m.runFastStatusSync(ctx)
 	})
 }
 
@@ -419,6 +433,192 @@ func (m *Manager) runPositionSync(ctx context.Context) {
 	_, _ = m.SyncOpenPositions(ctx)
 }
 
+func (m *Manager) runFastStatusSync(ctx context.Context) {
+	if m == nil {
+		return
+	}
+	ticker := time.NewTicker(fastStatusInterval)
+	defer ticker.Stop()
+	m.syncFastStatus(ctx)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			m.syncFastStatus(ctx)
+		}
+	}
+}
+
+func (m *Manager) syncFastStatus(ctx context.Context) {
+	if m == nil || m.client == nil || m.posRepo == nil {
+		return
+	}
+	trades, err := m.fetchTradesWithRetry(ctx, statusRetryMax, true)
+	if err != nil || len(trades) == 0 {
+		return
+	}
+	m.applyFastStatusSnapshot(ctx, trades)
+}
+
+func (m *Manager) fetchTradesWithRetry(ctx context.Context, maxRetries int, notify bool) ([]Trade, error) {
+	if m == nil || m.client == nil {
+		return nil, fmt.Errorf("freqtrade client not initialized")
+	}
+	var lastErr error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		trades, err := m.client.ListTrades(ctx)
+		if err == nil {
+			return trades, nil
+		}
+		lastErr = err
+		if attempt < maxRetries-1 {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(statusRetryInterval):
+			}
+		}
+	}
+	if notify && ctx.Err() == nil {
+		logger.Warnf("freqtrade fast sync: /status failed %d times: %v", maxRetries, lastErr)
+		m.notify("Freqtrade /status 异常 ⚠️",
+			fmt.Sprintf("连续失败 %d 次", maxRetries),
+			fmt.Sprintf("原因: %v", lastErr),
+		)
+	}
+	return nil, lastErr
+}
+
+func (m *Manager) applyFastStatusSnapshot(ctx context.Context, trades []Trade) {
+	if m == nil || m.posRepo == nil {
+		return
+	}
+	now := time.Now()
+	for _, tr := range trades {
+		if (!tr.IsOpen && tr.Amount <= 0) || tr.ID <= 0 {
+			continue
+		}
+		if m.hasPendingExit(tr.ID) {
+			continue
+		}
+		symbol := freqtradePairToSymbol(tr.Pair)
+		side := strings.ToLower(strings.TrimSpace(tr.Side))
+		if side == "" {
+			if tr.IsShort {
+				side = "short"
+			} else {
+				side = "long"
+			}
+		}
+		lock := getPositionLock(tr.ID)
+		lock.Lock()
+		m.applyFastStatusForTrade(ctx, tr, symbol, side, now)
+		lock.Unlock()
+	}
+}
+
+func (m *Manager) applyFastStatusForTrade(ctx context.Context, tr Trade, symbol, side string, ts time.Time) {
+	if m == nil || m.posRepo == nil {
+		return
+	}
+	order := database.LiveOrderRecord{
+		FreqtradeID:   tr.ID,
+		Symbol:        strings.ToUpper(symbol),
+		Side:          side,
+		Amount:        ptrFloat(tr.Amount),
+		InitialAmount: ptrFloat(tr.Amount),
+		StakeAmount:   ptrFloat(tr.StakeAmount),
+		Leverage:      ptrFloat(tr.Leverage),
+		PositionValue: ptrFloat(tr.StakeAmount * tr.Leverage),
+		Price:         ptrFloat(tr.OpenRate),
+		ClosedAmount:  ptrFloat(0),
+		Status:        database.LiveOrderStatusOpen,
+		RawData:       marshalRaw(tr),
+		CreatedAt:     ts,
+		UpdatedAt:     ts,
+	}
+	lastSync := ts
+	order.LastStatusSync = &lastSync
+	openTime := parseFreqtradeTime(tr.OpenDate)
+	if !openTime.IsZero() {
+		order.StartTime = &openTime
+	}
+	if tr.CurrentRate > 0 {
+		order.CurrentPrice = ptrFloat(tr.CurrentRate)
+	}
+	pnlRatio := tr.ProfitRatio
+	pnlAbs := tr.ProfitAbs
+	if pnlRatio == 0 && tr.CloseProfit != 0 {
+		pnlRatio = tr.CloseProfit
+	}
+	if pnlAbs == 0 && tr.CloseProfitAbs != 0 {
+		pnlAbs = tr.CloseProfitAbs
+	}
+
+	order.CurrentProfitRatio = ptrFloat(pnlRatio)
+	order.CurrentProfitAbs = ptrFloat(pnlAbs)
+	order.UnrealizedPnLRatio = ptrFloat(pnlRatio)
+	order.UnrealizedPnLUSD = ptrFloat(pnlAbs)
+
+	if err := m.posRepo.UpsertOrder(ctx, order); err != nil {
+		logger.Warnf("freqtrade fast sync: upsert trade=%d err=%v", tr.ID, err)
+		return
+	}
+
+	m.storeTrade(symbol, side, tr.ID)
+	m.mu.Lock()
+	pos := m.positions[tr.ID]
+	pos.TradeID = tr.ID
+	pos.Symbol = symbol
+	pos.Side = side
+	pos.Amount = tr.Amount
+	pos.Stake = tr.StakeAmount
+	pos.Leverage = tr.Leverage
+	pos.EntryPrice = tr.OpenRate
+	if !openTime.IsZero() {
+		pos.OpenedAt = openTime
+	}
+	pos.Closed = false
+	m.positions[tr.ID] = pos
+	m.mu.Unlock()
+}
+
+func (m *Manager) fetchTradeDetailWithRetry(ctx context.Context, tradeID int) (*Trade, error) {
+	if m == nil || m.client == nil {
+		return nil, fmt.Errorf("freqtrade client not initialized")
+	}
+	var lastErr error
+	for attempt := 0; attempt < statusRetryMax; attempt++ {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		tr, err := m.client.GetTrade(ctx, tradeID)
+		if err == nil {
+			return tr, nil
+		}
+		lastErr = err
+		if attempt < statusRetryMax-1 {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(statusRetryInterval):
+			}
+		}
+	}
+	if ctx.Err() == nil {
+		logger.Warnf("freqtrade trade detail: trade=%d failed %d times: %v", tradeID, statusRetryMax, lastErr)
+		m.notify("Freqtrade /trade 异常 ⚠️",
+			fmt.Sprintf("trade_id=%d 连续失败 %d 次", tradeID, statusRetryMax),
+			fmt.Sprintf("原因: %v", lastErr),
+		)
+	}
+	return nil, lastErr
+}
+
 // Positions 返回当前 freqtrade 持仓快照（基于内存缓存）。
 func (m *Manager) Positions() []decision.PositionSnapshot {
 	m.mu.Lock()
@@ -525,11 +725,26 @@ func (m *Manager) PositionsForAPI(ctx context.Context, opts PositionListOptions)
 			api.ClosedAt = timeToMillis(p.Order.EndTime)
 		}
 		baseValue := PositionPnLValue(api.Stake, api.Leverage, api.PositionValue)
-		realizedUSD := valOrZero(p.Order.PnLUSD)
-		realizedRatio := valOrZero(p.Order.PnLRatio)
+		realizedUSD := valOrZero(p.Order.RealizedPnLUSD)
+		if realizedUSD == 0 {
+			realizedUSD = valOrZero(p.Order.PnLUSD)
+		}
+		realizedRatio := valOrZero(p.Order.RealizedPnLRatio)
+		if realizedRatio == 0 {
+			realizedRatio = valOrZero(p.Order.PnLRatio)
+		}
+		unrealizedUSD := valOrZero(p.Order.UnrealizedPnLUSD)
+		unrealizedRatio := valOrZero(p.Order.UnrealizedPnLRatio)
+		currentPrice := valOrZero(p.Order.CurrentPrice)
+		if currentPrice > 0 {
+			api.CurrentPrice = currentPrice
+		}
 		if pos, ok := m.positions[p.Order.FreqtradeID]; ok {
 			if pos.ExitPrice > 0 {
 				api.ExitPrice = pos.ExitPrice
+				if api.CurrentPrice == 0 {
+					api.CurrentPrice = pos.ExitPrice
+				}
 			}
 			if pos.ExitReason != "" {
 				api.ExitReason = pos.ExitReason
@@ -551,8 +766,23 @@ func (m *Manager) PositionsForAPI(ctx context.Context, opts PositionListOptions)
 		}
 		api.RealizedPnLUSD = realizedUSD
 		api.RealizedPnLRatio = realizedRatio
-		api.PnLUSD = realizedUSD
-		api.PnLRatio = realizedRatio
+		api.UnrealizedPnLUSD = unrealizedUSD
+		api.UnrealizedPnLRatio = unrealizedRatio
+		api.PnLUSD = realizedUSD + unrealizedUSD
+		if baseValue > 0 {
+			api.PnLRatio = api.PnLUSD / baseValue
+		} else if api.PnLRatio == 0 {
+			api.PnLRatio = realizedRatio + unrealizedRatio
+		}
+		if strings.EqualFold(api.Status, "closed") {
+			api.UnrealizedPnLUSD = 0
+			api.UnrealizedPnLRatio = 0
+			api.PnLUSD = realizedUSD
+			api.PnLRatio = realizedRatio
+			if api.CurrentPrice == 0 && api.ExitPrice > 0 {
+				api.CurrentPrice = api.ExitPrice
+			}
+		}
 		// CurrentPrice/ExitPrice 可结合行情或事件补充，这里以存量信息为准。
 		if opts.IncludeLogs && m.posRepo != nil {
 			limit := opts.LogsLimit

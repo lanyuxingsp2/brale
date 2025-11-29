@@ -105,22 +105,28 @@ func (c *Client) ForceExit(ctx context.Context, payload ForceExitPayload) error 
 
 // Trade represents a subset of freqtrade trade fields.
 type Trade struct {
-	ID           int     `json:"trade_id"`
-	Pair         string  `json:"pair"`
-	Side         string  `json:"side"`
-	IsShort      bool    `json:"is_short"`
-	OpenDate     string  `json:"open_date"`
-	CloseDate    string  `json:"close_date"`
-	OpenRate     float64 `json:"open_rate"`
-	CloseRate    float64 `json:"close_rate"`
-	TakeProfit   float64 `json:"take_profit,omitempty"`
-	StopLoss     float64 `json:"stop_loss,omitempty"`
-	Amount       float64 `json:"amount"`
-	StakeAmount  float64 `json:"stake_amount"`
-	Leverage     float64 `json:"leverage"`
-	OpenOrderID  string  `json:"open_order_id"`
-	CloseOrderID string  `json:"close_order_id"`
-	IsOpen       bool    `json:"is_open"`
+	ID             int     `json:"trade_id"`
+	Pair           string  `json:"pair"`
+	Side           string  `json:"side"`
+	IsShort        bool    `json:"is_short"`
+	OpenDate       string  `json:"open_date"`
+	CloseDate      string  `json:"close_date"`
+	OpenRate       float64 `json:"open_rate"`
+	CloseRate      float64 `json:"close_rate"`
+	TakeProfit     float64 `json:"take_profit,omitempty"`
+	StopLoss       float64 `json:"stop_loss,omitempty"`
+	Amount         float64 `json:"amount"`
+	StakeAmount    float64 `json:"stake_amount"`
+	Leverage       float64 `json:"leverage"`
+	OpenOrderID    string  `json:"open_order_id"`
+	CloseOrderID   string  `json:"close_order_id"`
+	IsOpen         bool    `json:"is_open"`
+	CurrentRate    float64 `json:"current_rate"`
+	CloseProfit    float64 `json:"close_profit"`
+	CloseProfitAbs float64 `json:"close_profit_abs"`
+	// Freqtrade /status 接口对于未平仓订单，往往使用 profit_ratio/profit_abs
+	ProfitRatio float64 `json:"profit_ratio"`
+	ProfitAbs   float64 `json:"profit_abs"`
 }
 
 // Balance 描述 freqtrade /balance 返回的核心字段。
@@ -179,6 +185,21 @@ func (c *Client) fetchTrades(ctx context.Context, path string) ([]Trade, error) 
 	default:
 		return nil, nil
 	}
+}
+
+// GetTrade 查询指定 trade_id 的最新详情（含已平仓记录）。
+func (c *Client) GetTrade(ctx context.Context, tradeID int) (*Trade, error) {
+	if c == nil || c.httpClient == nil {
+		return nil, fmt.Errorf("freqtrade client not initialized")
+	}
+	if tradeID <= 0 {
+		return nil, fmt.Errorf("trade_id 必填")
+	}
+	var tr Trade
+	if err := c.doRequest(ctx, http.MethodGet, fmt.Sprintf("/trades/%d", tradeID), nil, &tr); err != nil {
+		return nil, err
+	}
+	return &tr, nil
 }
 
 func filterOpenTrades(trades []Trade) []Trade {

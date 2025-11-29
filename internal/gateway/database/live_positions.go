@@ -48,25 +48,33 @@ type execContext interface {
 
 // LiveOrderRecord 表示需要写入/更新的 live_orders 数据。
 type LiveOrderRecord struct {
-	FreqtradeID   int
-	Symbol        string
-	Side          string
-	Amount        *float64
-	InitialAmount *float64
-	StakeAmount   *float64
-	Leverage      *float64
-	PositionValue *float64
-	Price         *float64
-	ClosedAmount  *float64
-	IsSimulated   *bool
-	Status        LiveOrderStatus
-	StartTime     *time.Time
-	EndTime       *time.Time
-	RawData       string
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
-	PnLRatio      *float64
-	PnLUSD        *float64
+	FreqtradeID        int
+	Symbol             string
+	Side               string
+	Amount             *float64
+	InitialAmount      *float64
+	StakeAmount        *float64
+	Leverage           *float64
+	PositionValue      *float64
+	Price              *float64
+	ClosedAmount       *float64
+	IsSimulated        *bool
+	Status             LiveOrderStatus
+	StartTime          *time.Time
+	EndTime            *time.Time
+	RawData            string
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+	PnLRatio           *float64
+	PnLUSD             *float64
+	CurrentPrice       *float64
+	CurrentProfitRatio *float64
+	CurrentProfitAbs   *float64
+	UnrealizedPnLRatio *float64
+	UnrealizedPnLUSD   *float64
+	RealizedPnLRatio   *float64
+	RealizedPnLUSD     *float64
+	LastStatusSync     *time.Time
 }
 
 // LiveTierRecord 表示 live_tiers 表的记录。
@@ -184,7 +192,8 @@ func (s *DecisionLogStore) upsertLiveOrderWithExec(ctx context.Context, exec exe
 		tmp := now
 		rec.StartTime = &tmp
 	}
-	isSim := interface{}(nil)
+	// Fix: Default to 0 (false) to satisfy NOT NULL constraint.
+	isSim := 0
 	if rec.IsSimulated != nil {
 		isSim = boolToInt(*rec.IsSimulated)
 	}
@@ -200,8 +209,16 @@ func (s *DecisionLogStore) upsertLiveOrderWithExec(ctx context.Context, exec exe
 	closed := nullableFloat(rec.ClosedAmount)
 	pnlRatio := nullableFloat(rec.PnLRatio)
 	pnlUSD := nullableFloat(rec.PnLUSD)
+	currentPrice := nullableFloat(rec.CurrentPrice)
+	currentProfitRatio := nullableFloat(rec.CurrentProfitRatio)
+	currentProfitAbs := nullableFloat(rec.CurrentProfitAbs)
+	unrealizedPnLRatio := nullableFloat(rec.UnrealizedPnLRatio)
+	unrealizedPnLUSD := nullableFloat(rec.UnrealizedPnLUSD)
+	realizedPnLRatio := nullableFloat(rec.RealizedPnLRatio)
+	realizedPnLUSD := nullableFloat(rec.RealizedPnLUSD)
 	startTs := timeToMillisPtr(rec.StartTime)
 	endTs := timeToMillisPtr(rec.EndTime)
+	lastSync := timeToMillisPtr(rec.LastStatusSync)
 	rawData := strings.TrimSpace(rec.RawData)
 	if rawData == "" {
 		rawData = ""
@@ -209,9 +226,11 @@ func (s *DecisionLogStore) upsertLiveOrderWithExec(ctx context.Context, exec exe
 	_, err := exec.ExecContext(ctx, `
 		INSERT INTO live_orders
 			(freqtrade_id, symbol, side, amount, initial_amount, stake_amount, leverage, position_value,
-			 price, closed_amount, pnl_ratio, pnl_usd, is_simulated, status, start_timestamp, end_timestamp,
+			 price, closed_amount, pnl_ratio, pnl_usd, current_price, current_profit_ratio, current_profit_abs,
+			 unrealized_pnl_ratio, unrealized_pnl_usd, realized_pnl_ratio, realized_pnl_usd,
+			 is_simulated, status, start_timestamp, end_timestamp, last_status_sync,
 			 raw_data, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(freqtrade_id) DO UPDATE SET
 			symbol=COALESCE(excluded.symbol, live_orders.symbol),
 			side=COALESCE(excluded.side, live_orders.side),
@@ -224,14 +243,24 @@ func (s *DecisionLogStore) upsertLiveOrderWithExec(ctx context.Context, exec exe
 			closed_amount=COALESCE(excluded.closed_amount, live_orders.closed_amount),
 			pnl_ratio=COALESCE(excluded.pnl_ratio, live_orders.pnl_ratio),
 			pnl_usd=COALESCE(excluded.pnl_usd, live_orders.pnl_usd),
+			current_price=COALESCE(excluded.current_price, live_orders.current_price),
+			current_profit_ratio=COALESCE(excluded.current_profit_ratio, live_orders.current_profit_ratio),
+			current_profit_abs=COALESCE(excluded.current_profit_abs, live_orders.current_profit_abs),
+			unrealized_pnl_ratio=COALESCE(excluded.unrealized_pnl_ratio, live_orders.unrealized_pnl_ratio),
+			unrealized_pnl_usd=COALESCE(excluded.unrealized_pnl_usd, live_orders.unrealized_pnl_usd),
+			realized_pnl_ratio=COALESCE(excluded.realized_pnl_ratio, live_orders.realized_pnl_ratio),
+			realized_pnl_usd=COALESCE(excluded.realized_pnl_usd, live_orders.realized_pnl_usd),
 			is_simulated=COALESCE(excluded.is_simulated, live_orders.is_simulated),
 			status=COALESCE(excluded.status, live_orders.status),
 			start_timestamp=COALESCE(excluded.start_timestamp, live_orders.start_timestamp),
 			end_timestamp=COALESCE(excluded.end_timestamp, live_orders.end_timestamp),
+			last_status_sync=COALESCE(excluded.last_status_sync, live_orders.last_status_sync),
 			raw_data=COALESCE(NULLIF(excluded.raw_data, ''), live_orders.raw_data),
 			updated_at=excluded.updated_at;
 	`, rec.FreqtradeID, symbol, side, amount, initialAmount, stake, leverage, posVal, price,
-		closed, pnlRatio, pnlUSD, isSim, int(status), startTs, endTs, nullIfEmptyString(rawData),
+		closed, pnlRatio, pnlUSD, currentPrice, currentProfitRatio, currentProfitAbs,
+		unrealizedPnLRatio, unrealizedPnLUSD, realizedPnLRatio, realizedPnLUSD,
+		isSim, int(status), startTs, endTs, lastSync, nullIfEmptyString(rawData),
 		rec.CreatedAt.UnixMilli(), rec.UpdatedAt.UnixMilli())
 	return err
 }
@@ -535,7 +564,9 @@ func (s *DecisionLogStore) GetLivePosition(ctx context.Context, freqtradeID int)
 	}
 	row := db.QueryRowContext(ctx, `
 		SELECT o.freqtrade_id, o.symbol, o.side, o.amount, o.initial_amount, o.stake_amount, o.leverage, o.position_value,
-		       o.price, o.closed_amount, o.pnl_ratio, o.pnl_usd, o.is_simulated, o.status, o.start_timestamp, o.end_timestamp, o.raw_data,
+		       o.price, o.closed_amount, o.pnl_ratio, o.pnl_usd, o.current_price, o.current_profit_ratio, o.current_profit_abs,
+		       o.unrealized_pnl_ratio, o.unrealized_pnl_usd, o.realized_pnl_ratio, o.realized_pnl_usd,
+		       o.is_simulated, o.status, o.start_timestamp, o.end_timestamp, o.last_status_sync, o.raw_data,
 		       o.created_at, o.updated_at,
 		       t.take_profit, t.stop_loss, t.tier1, t.tier1_ratio, t.tier1_done,
 		       t.tier2, t.tier2_ratio, t.tier2_done, t.tier3, t.tier3_ratio, t.tier3_done,
@@ -571,12 +602,22 @@ func (s *DecisionLogStore) GetLivePosition(ctx context.Context, freqtradeID int)
 		oClosed                sql.NullFloat64
 		oPnLRatio              sql.NullFloat64
 		oPnLUSD                sql.NullFloat64
+		oCurrentPrice          sql.NullFloat64
+		oCurrentRatio          sql.NullFloat64
+		oCurrentAbs            sql.NullFloat64
+		oUnrealizedRatio       sql.NullFloat64
+		oUnrealizedUSD         sql.NullFloat64
+		oRealizedRatio         sql.NullFloat64
+		oRealizedUSD           sql.NullFloat64
+		oLastStatusSync        sql.NullInt64
 		oCreated               sql.NullInt64
 		oUpdated               sql.NullInt64
 	)
 	if err := row.Scan(
 		&o.FreqtradeID, &o.Symbol, &o.Side, &oAmount, &oInitial, &oStake, &oLeverage, &oPosVal,
-		&oPrice, &oClosed, &oPnLRatio, &oPnLUSD, &isSim, &o.Status, &startTs, &endTs, &rawData, &oCreated, &oUpdated,
+		&oPrice, &oClosed, &oPnLRatio, &oPnLUSD, &oCurrentPrice, &oCurrentRatio, &oCurrentAbs,
+		&oUnrealizedRatio, &oUnrealizedUSD, &oRealizedRatio, &oRealizedUSD,
+		&isSim, &o.Status, &startTs, &endTs, &oLastStatusSync, &rawData, &oCreated, &oUpdated,
 		&tTakeProfit, &tStopLoss, &tTier1, &tTier1Ratio, &tTier1Done,
 		&tTier2, &tTier2Ratio, &tTier2Done, &tTier3, &tTier3Ratio, &tTier3Done,
 		&tRemain, &tStatus, &tSource, &tReason, &tTierNotes, &tPlaceholder, &tEvent, &tUpdated, &tCreated,
@@ -643,6 +684,38 @@ func (s *DecisionLogStore) GetLivePosition(ctx context.Context, freqtradeID int)
 		v := oPnLUSD.Float64
 		o.PnLUSD = &v
 	}
+	if oCurrentPrice.Valid {
+		v := oCurrentPrice.Float64
+		o.CurrentPrice = &v
+	}
+	if oCurrentRatio.Valid {
+		v := oCurrentRatio.Float64
+		o.CurrentProfitRatio = &v
+	}
+	if oCurrentAbs.Valid {
+		v := oCurrentAbs.Float64
+		o.CurrentProfitAbs = &v
+	}
+	if oUnrealizedRatio.Valid {
+		v := oUnrealizedRatio.Float64
+		o.UnrealizedPnLRatio = &v
+	}
+	if oUnrealizedUSD.Valid {
+		v := oUnrealizedUSD.Float64
+		o.UnrealizedPnLUSD = &v
+	}
+	if oRealizedRatio.Valid {
+		v := oRealizedRatio.Float64
+		o.RealizedPnLRatio = &v
+	}
+	if oRealizedUSD.Valid {
+		v := oRealizedUSD.Float64
+		o.RealizedPnLUSD = &v
+	}
+	if oLastStatusSync.Valid {
+		ts := time.UnixMilli(oLastStatusSync.Int64)
+		o.LastStatusSync = &ts
+	}
 	tier.FreqtradeID = o.FreqtradeID
 	tier.Symbol = strings.ToUpper(strings.TrimSpace(o.Symbol))
 	tier.TakeProfit = tTakeProfit.Float64
@@ -689,7 +762,9 @@ func (s *DecisionLogStore) ListActivePositions(ctx context.Context, limit int) (
 	}
 	rows, err := db.QueryContext(ctx, `
 		SELECT o.freqtrade_id, o.symbol, o.side, o.amount, o.initial_amount, o.stake_amount, o.leverage, o.position_value,
-		       o.price, o.closed_amount, o.pnl_ratio, o.pnl_usd, o.is_simulated, o.status, o.start_timestamp, o.end_timestamp, o.raw_data,
+		       o.price, o.closed_amount, o.pnl_ratio, o.pnl_usd, o.current_price, o.current_profit_ratio, o.current_profit_abs,
+		       o.unrealized_pnl_ratio, o.unrealized_pnl_usd, o.realized_pnl_ratio, o.realized_pnl_usd,
+		       o.is_simulated, o.status, o.start_timestamp, o.end_timestamp, o.last_status_sync, o.raw_data,
 		       o.created_at, o.updated_at,
 		       t.take_profit, t.stop_loss, t.tier1, t.tier1_ratio, t.tier1_done,
 		       t.tier2, t.tier2_ratio, t.tier2_done, t.tier3, t.tier3_ratio, t.tier3_done,
@@ -743,7 +818,9 @@ func (s *DecisionLogStore) ListRecentPositionsPaged(ctx context.Context, symbol 
 	}
 	rows, err := db.QueryContext(ctx, `
 		SELECT o.freqtrade_id, o.symbol, o.side, o.amount, o.initial_amount, o.stake_amount, o.leverage, o.position_value,
-		       o.price, o.closed_amount, o.pnl_ratio, o.pnl_usd, o.is_simulated, o.status, o.start_timestamp, o.end_timestamp, o.raw_data,
+		       o.price, o.closed_amount, o.pnl_ratio, o.pnl_usd, o.current_price, o.current_profit_ratio, o.current_profit_abs,
+		       o.unrealized_pnl_ratio, o.unrealized_pnl_usd, o.realized_pnl_ratio, o.realized_pnl_usd,
+		       o.is_simulated, o.status, o.start_timestamp, o.end_timestamp, o.last_status_sync, o.raw_data,
 		       o.created_at, o.updated_at,
 		       t.take_profit, t.stop_loss, t.tier1, t.tier1_ratio, t.tier1_done,
 		       t.tier2, t.tier2_ratio, t.tier2_done, t.tier3, t.tier3_ratio, t.tier3_done,
@@ -821,10 +898,20 @@ func scanLivePositionRow(rows *sql.Rows) (LiveOrderWithTiers, error) {
 		oClosed                sql.NullFloat64
 		oPnLRatio              sql.NullFloat64
 		oPnLUSD                sql.NullFloat64
+		oCurrentPrice          sql.NullFloat64
+		oCurrentRatio          sql.NullFloat64
+		oCurrentAbs            sql.NullFloat64
+		oUnrealizedRatio       sql.NullFloat64
+		oUnrealizedUSD         sql.NullFloat64
+		oRealizedRatio         sql.NullFloat64
+		oRealizedUSD           sql.NullFloat64
+		oLastStatusSync        sql.NullInt64
 	)
 	if err := rows.Scan(
 		&o.FreqtradeID, &o.Symbol, &o.Side, &oAmount, &oInitial, &oStake, &oLeverage, &oPosVal,
-		&oPrice, &oClosed, &oPnLRatio, &oPnLUSD, &isSim, &o.Status, &startTs, &endTs, &rawData, &oCreated, &oUpdated,
+		&oPrice, &oClosed, &oPnLRatio, &oPnLUSD, &oCurrentPrice, &oCurrentRatio, &oCurrentAbs,
+		&oUnrealizedRatio, &oUnrealizedUSD, &oRealizedRatio, &oRealizedUSD,
+		&isSim, &o.Status, &startTs, &endTs, &oLastStatusSync, &rawData, &oCreated, &oUpdated,
 		&tTakeProfit, &tStopLoss, &tTier1, &tTier1Ratio, &tTier1Done,
 		&tTier2, &tTier2Ratio, &tTier2Done, &tTier3, &tTier3Ratio, &tTier3Done,
 		&tRemain, &tStatus, &tSource, &tReason, &tTierNotes, &tPlaceholder, &tEvent, &tUpdated, &tCreated,
@@ -887,6 +974,38 @@ func scanLivePositionRow(rows *sql.Rows) (LiveOrderWithTiers, error) {
 	if oPnLUSD.Valid {
 		v := oPnLUSD.Float64
 		o.PnLUSD = &v
+	}
+	if oCurrentPrice.Valid {
+		v := oCurrentPrice.Float64
+		o.CurrentPrice = &v
+	}
+	if oCurrentRatio.Valid {
+		v := oCurrentRatio.Float64
+		o.CurrentProfitRatio = &v
+	}
+	if oCurrentAbs.Valid {
+		v := oCurrentAbs.Float64
+		o.CurrentProfitAbs = &v
+	}
+	if oUnrealizedRatio.Valid {
+		v := oUnrealizedRatio.Float64
+		o.UnrealizedPnLRatio = &v
+	}
+	if oUnrealizedUSD.Valid {
+		v := oUnrealizedUSD.Float64
+		o.UnrealizedPnLUSD = &v
+	}
+	if oRealizedRatio.Valid {
+		v := oRealizedRatio.Float64
+		o.RealizedPnLRatio = &v
+	}
+	if oRealizedUSD.Valid {
+		v := oRealizedUSD.Float64
+		o.RealizedPnLUSD = &v
+	}
+	if oLastStatusSync.Valid {
+		ts := time.UnixMilli(oLastStatusSync.Int64)
+		o.LastStatusSync = &ts
 	}
 	tier.FreqtradeID = o.FreqtradeID
 	tier.Symbol = strings.ToUpper(strings.TrimSpace(o.Symbol))

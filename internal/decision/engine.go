@@ -58,6 +58,7 @@ type PositionSnapshot struct {
 type AccountSnapshot struct {
 	Total     float64   `json:"total"`
 	Available float64   `json:"available"`
+	Used      float64   `json:"used"`
 	Currency  string    `json:"currency"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
