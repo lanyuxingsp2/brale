@@ -27,9 +27,10 @@ import (
 
 // App 负责应用级编排：加载配置→初始化依赖→启动实时与回测服务。
 type App struct {
-	cfg      *brcfg.Config
-	live     *LiveService
-	liveHTTP *livehttp.Server
+	cfg        *brcfg.Config
+	live       *LiveService
+	liveHTTP   *livehttp.Server
+	metricsSvc *brmarket.MetricsService // 新增：持有 MetricsService 实例
 }
 
 // NewApp 根据配置构建应用对象（不启动）
@@ -38,6 +39,9 @@ func NewApp(cfg *brcfg.Config) (*App, error) {
 		return nil, fmt.Errorf("nil config")
 	}
 	logger.SetLevel(cfg.App.LogLevel)
+
+	// 通用 HTTP 客户端，供需要外部请求的服务复用
+	// httpClient := &http.Client{Timeout: 15 * time.Second} // Revert: No longer needed
 
 	// 符号提供者
 	var sp coins.SymbolProvider
@@ -99,6 +103,18 @@ func NewApp(cfg *brcfg.Config) (*App, error) {
 	preheater.Preheat(ctx, syms, hIntervals, cfg.Kline.MaxCached)
 	logger.Infof("✓ Warmup 完成，最小条数=%v", lookbacks)
 	warmupSummary := fmt.Sprintf("*Warmup 完成*\n```\n%v\n```", lookbacks)
+
+	// 初始化 MetricsService，用于周期性获取 OI/资金费率等数据
+	metricsSvc := brmarket.NewMetricsService(
+		src,
+		syms,
+		cfg.AI.DecisionIntervalSeconds,
+		horizon, // Pass horizon profile here
+	)
+	if metricsSvc == nil {
+		return nil, fmt.Errorf("初始化 MetricsService 失败")
+	}
+	logger.Infof("✓ MetricsService 初始化成功")
 
 	// 模型 Providers
 	var (
@@ -165,7 +181,7 @@ func NewApp(cfg *brcfg.Config) (*App, error) {
 		Parallel:              true,
 		LogEachModel:          cfg.AI.LogEachModel,
 		DebugStructuredBlocks: cfg.AI.LogEachModel,
-		Metrics:               brmarket.NewDefaultMetricsFetcher(""),
+		Metrics:               metricsSvc,
 		IncludeOI:             true,
 		IncludeFunding:        true,
 		TimeoutSeconds:        cfg.MCP.TimeoutSeconds,
@@ -278,9 +294,10 @@ func NewApp(cfg *brcfg.Config) (*App, error) {
 	}
 
 	return &App{
-		cfg:      cfg,
-		live:     liveSvc,
-		liveHTTP: liveHTTPServe,
+		cfg:        cfg,
+		live:       liveSvc,
+		liveHTTP:   liveHTTPServe,
+		metricsSvc: metricsSvc, // Assign the metrics service
 	}, nil
 }
 
@@ -289,6 +306,12 @@ func (a *App) Run(ctx context.Context) error {
 	if a == nil || a.cfg == nil {
 		return fmt.Errorf("app not initialized")
 	}
+
+	// 启动 MetricsService
+	if a.metricsSvc != nil {
+		go a.metricsSvc.Start(ctx)
+	}
+
 	if a.liveHTTP != nil {
 		go func() {
 			if err := a.liveHTTP.Start(ctx); err != nil {

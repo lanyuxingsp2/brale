@@ -2,6 +2,7 @@ package freqtrade
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -599,6 +600,9 @@ func (m *Manager) fetchTradeDetailWithRetry(ctx context.Context, tradeID int) (*
 		tr, err := m.client.GetTrade(ctx, tradeID)
 		if err == nil {
 			return tr, nil
+		}
+		if errors.Is(err, errTradeNotFound) {
+			return nil, err
 		}
 		lastErr = err
 		if attempt < statusRetryMax-1 {

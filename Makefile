@@ -79,17 +79,18 @@ start:
 		status=$$(docker inspect -f '{{.State.Status}}' $$FT_CONTAINER 2>/dev/null); \
 		if [ "$$status" = "running" ]; then \
 			echo "freqtrade 已运行"; \
-			sleep 5 ;\
+			sleep 10 ;\
 			break; \
 		fi; \
 		if [ "$$status" = "exited" ] || [ -z "$$status" ]; then \
 			echo "freqtrade 状态异常: $$status"; \
 			$(DOCKER_COMPOSE) logs freqtrade; \
-			sleep 5 ;\
+			sleep 10 ;\
 			exit 1; \
 		fi; \
 		echo "当前状态：$$status，继续等待..."; \
 		sleep 5; \
 	done
+	sleep 10;
 	@echo "启动 brale..."
 	$(DOCKER_COMPOSE) up -d brale

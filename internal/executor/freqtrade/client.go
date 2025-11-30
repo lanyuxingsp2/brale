@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -24,6 +25,13 @@ type Client struct {
 	password   string
 	token      string
 }
+
+const (
+	tradeHistoryPageLimit = 500
+	tradeHistoryMaxPages  = 3
+)
+
+var errTradeNotFound = errors.New("freqtrade trade not found")
 
 // NewClient constructs a Freqtrade client from configuration.
 func NewClient(cfg brconfig.FreqtradeConfig) (*Client, error) {
@@ -195,11 +203,25 @@ func (c *Client) GetTrade(ctx context.Context, tradeID int) (*Trade, error) {
 	if tradeID <= 0 {
 		return nil, fmt.Errorf("trade_id 必填")
 	}
-	var tr Trade
-	if err := c.doRequest(ctx, http.MethodGet, fmt.Sprintf("/trades/%d", tradeID), nil, &tr); err != nil {
-		return nil, err
+	for page := 0; page < tradeHistoryMaxPages; page++ {
+		offset := page * tradeHistoryPageLimit
+		path := fmt.Sprintf("/trades?order_by_id=true&limit=%d&offset=%d", tradeHistoryPageLimit, offset)
+		trades, err := c.fetchTrades(ctx, path)
+		if err != nil {
+			return nil, err
+		}
+		if len(trades) == 0 {
+			break
+		}
+		for _, tr := range trades {
+			if tr.ID == tradeID {
+				// 返回拷贝，避免后续遍历修改底层 slice。
+				copy := tr
+				return &copy, nil
+			}
+		}
 	}
-	return &tr, nil
+	return nil, errTradeNotFound
 }
 
 func filterOpenTrades(trades []Trade) []Trade {

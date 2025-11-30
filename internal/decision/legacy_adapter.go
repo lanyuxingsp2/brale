@@ -56,10 +56,7 @@ type LegacyEngineAdapter struct {
 	DebugStructuredBlocks bool
 
 	// 可选：补充 OI 与资金费率
-	Metrics interface {
-		OI(ctx context.Context, symbol string) (float64, error)
-		Funding(ctx context.Context, symbol string) (float64, error)
-	}
+	Metrics *market.MetricsService
 	IncludeOI      bool
 	IncludeFunding bool
 
@@ -301,6 +298,7 @@ func (e *LegacyEngineAdapter) buildUserSummary(ctx context.Context, input Contex
 	b.WriteString("# 决策输入（Multi-Agent 汇总）\n")
 	e.appendLastDecisions(&b, input.LastDecisions)
 	e.appendCurrentPositions(&b, input.Account, input.Positions)
+	e.appendDerivativesMetrics(ctx, &b, input.Candidates) // Add derivatives metrics
 	e.appendKlineWindows(&b, input.Analysis)
 	e.logStructuredBlocksDebug(input.Analysis)
 	if len(insights) > 0 {
@@ -821,6 +819,40 @@ func (e *LegacyEngineAdapter) appendCurrentPositions(b *strings.Builder, account
 		b.WriteString(line + "\n")
 	}
 	b.WriteString("请结合上述仓位判断是否需要平仓、加仓或调整计划。\n")
+}
+
+// appendDerivativesMetrics 将 OI 与资金费率附加到 User 提示词中
+func (e *LegacyEngineAdapter) appendDerivativesMetrics(ctx context.Context, b *strings.Builder, candidates []string) {
+	if b == nil || e.Metrics == nil || !e.IncludeOI && !e.IncludeFunding || len(candidates) == 0 {
+		return
+	}
+
+	b.WriteString("\n## 市场衍生品数据 (Market Derivatives Data)\n")
+	for _, sym := range candidates {
+		metricsData, ok := e.Metrics.Get(sym)
+		if !ok || metricsData.Error != "" {
+			b.WriteString(fmt.Sprintf("- %s: 获取衍生品数据失败 (%s)\n", strings.ToUpper(sym), metricsData.Error))
+			continue
+		}
+
+		b.WriteString(fmt.Sprintf("- %s:\n", strings.ToUpper(sym)))
+		if e.IncludeOI {
+			b.WriteString(fmt.Sprintf("  - 最新未平仓量 (OI): %.2f\n", metricsData.OI))
+			// 显示 OI 历史变化率
+			for _, tf := range e.Metrics.GetTargetTimeframes() {
+				if oldOI, ok := metricsData.OIHistory[tf]; ok && oldOI > 0 {
+					changePct := (metricsData.OI - oldOI) / oldOI * 100
+					b.WriteString(fmt.Sprintf("    - OI %s前: %.2f (%.2f%%)\n", tf, oldOI, changePct))
+				} else {
+					b.WriteString(fmt.Sprintf("    - OI %s前: 无数据\n", tf))
+				}
+			}
+		}
+		if e.IncludeFunding {
+			b.WriteString(fmt.Sprintf("  - 资金费率 (Funding Rate): %.4f%%\n", metricsData.FundingRate*100))
+		}
+	}
+	b.WriteString("请结合这些衍生品数据评估市场情绪和资金动向。\n")
 }
 
 func buildTierLines(pos PositionSnapshot) string {

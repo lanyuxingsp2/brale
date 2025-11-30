@@ -2,6 +2,7 @@ package freqtrade
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"strings"
@@ -399,8 +400,18 @@ func (m *Manager) handleExit(ctx context.Context, msg WebhookMessage, event stri
 		updatedOrder.RealizedPnLUSD = ptrFloat(finalTrade.CloseProfitAbs)
 		syncAt = time.Now()
 		updatedOrder.LastStatusSync = &syncAt
-	} else if detailErr != nil && updatedOrder.Status == database.LiveOrderStatusClosed {
-		updatedOrder.Status = database.LiveOrderStatusRetrying
+	} else if detailErr != nil {
+		// 若 /trades 不含该订单或返回 404，说明 freqtrade 已完全移除，保持 Closed 状态即可。
+		is404 := strings.Contains(detailErr.Error(), "404") || strings.Contains(detailErr.Error(), "Not Found")
+		if errors.Is(detailErr, errTradeNotFound) || is404 {
+			logger.Warnf("freqtrade manager: trade=%d 历史记录缺失，保持 Closed 状态", tradeID)
+			updatedOrder.Status = database.LiveOrderStatusClosed
+		} else if updatedOrder.Status != database.LiveOrderStatusClosed {
+			// 仅对未真正关闭的状态转为 retrying，等待后续补全。
+			updatedOrder.Status = database.LiveOrderStatusRetrying
+		} else {
+			logger.Warnf("freqtrade manager: trade=%d 查询盈亏失败 err=%v，但已平仓，保持 Closed", tradeID, detailErr)
+		}
 	}
 
 	if tierRec.FreqtradeID == 0 {
@@ -493,11 +504,13 @@ func (m *Manager) handleExit(ctx context.Context, msg WebhookMessage, event stri
 	}
 
 	op := database.OperationFailed
-	switch strings.ToLower(msg.ExitReason) {
+	switch strings.ToLower(strings.TrimSpace(msg.ExitReason)) {
 	case "stop_loss":
 		op = database.OperationStopLoss
 	case "take_profit":
 		op = database.OperationTakeProfit
+	case "force_exit":
+		op = database.OperationForceExit
 	default:
 		op = database.OperationFailed
 	}

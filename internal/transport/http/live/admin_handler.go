@@ -149,6 +149,8 @@ var adminTemplateFuncs = template.FuncMap{
 			return "ADJUST"
 		case database.OperationUpdateTiers:
 			return "UPDATE_TIERS"
+		case database.OperationForceExit:
+			return "FORCE_EXIT"
 		case database.OperationFailed:
 			return "FAILED"
 		default:

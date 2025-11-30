@@ -141,6 +141,7 @@ const (
 	OperationAdjust      OperationType = 7
 	OperationUpdateTiers OperationType = 8
 	OperationFailed      OperationType = 10
+	OperationForceExit   OperationType = 11
 )
 
 // TradeOperationRecord 表示一次仓位操作流水。

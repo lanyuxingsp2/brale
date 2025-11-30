@@ -18,6 +18,14 @@ type TradeEvent struct {
 	TradeTime int64
 }
 
+// OpenInterestPoint 对应交易所 API 返回的 OI 历史单条记录
+type OpenInterestPoint struct {
+	Symbol             string  `json:"symbol"`
+	SumOpenInterest    float64 `json:"sumOpenInterest"`
+	SumOpenInterestValue float64 `json:"sumOpenInterestValue"`
+	Timestamp          int64   `json:"timestamp"` // 毫秒级时间戳
+}
+
 // SubscribeOptions 控制实时订阅行为。
 type SubscribeOptions struct {
 	BatchSize    int
@@ -41,6 +49,12 @@ type Source interface {
 	Subscribe(ctx context.Context, symbols, intervals []string, opts SubscribeOptions) (<-chan CandleEvent, error)
 	// SubscribeTrades 订阅实时成交价（如 aggTrade），供策略使用真实成交价触发。
 	SubscribeTrades(ctx context.Context, symbols []string, opts SubscribeOptions) (<-chan TradeEvent, error)
+	// GetFundingRate 获取最新资金费率。
+	GetFundingRate(ctx context.Context, symbol string) (float64, error)
+	// GetOpenInterestHistory 获取 OI 历史 (包含最新值)
+	// period: "5m", "15m", "1h", "4h", "1d" 等
+	// limit: 获取多少条
+	GetOpenInterestHistory(ctx context.Context, symbol, period string, limit int) ([]OpenInterestPoint, error)
 	// Stats 返回当前运行状态（若 source 不支持则返回零值）。
 	Stats() SourceStats
 	// Close 释放底层资源，例如关闭 WS 连接。
