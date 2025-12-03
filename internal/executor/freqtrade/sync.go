@@ -14,39 +14,6 @@ import (
 
 const ghostCloseGrace = 15 * time.Second
 
-func ordersEqual(a, b database.LiveOrderRecord) bool {
-	return a.FreqtradeID == b.FreqtradeID &&
-		strings.EqualFold(strings.TrimSpace(a.Symbol), strings.TrimSpace(b.Symbol)) &&
-		strings.EqualFold(strings.TrimSpace(a.Side), strings.TrimSpace(b.Side)) &&
-		a.Status == b.Status &&
-		floatEqual(valOrZero(a.Amount), valOrZero(b.Amount)) &&
-		floatEqual(valOrZero(a.InitialAmount), valOrZero(b.InitialAmount)) &&
-		floatEqual(valOrZero(a.StakeAmount), valOrZero(b.StakeAmount)) &&
-		floatEqual(valOrZero(a.Leverage), valOrZero(b.Leverage)) &&
-		floatEqual(valOrZero(a.PositionValue), valOrZero(b.PositionValue)) &&
-		floatEqual(valOrZero(a.Price), valOrZero(b.Price)) &&
-		floatEqual(valOrZero(a.ClosedAmount), valOrZero(b.ClosedAmount))
-}
-
-func tiersEqual(a, b database.LiveTierRecord) bool {
-	return a.FreqtradeID == b.FreqtradeID &&
-		strings.EqualFold(strings.TrimSpace(a.Symbol), strings.TrimSpace(b.Symbol)) &&
-		floatEqual(a.TakeProfit, b.TakeProfit) &&
-		floatEqual(a.StopLoss, b.StopLoss) &&
-		floatEqual(a.Tier1, b.Tier1) &&
-		floatEqual(a.Tier1Ratio, b.Tier1Ratio) &&
-		a.Tier1Done == b.Tier1Done &&
-		floatEqual(a.Tier2, b.Tier2) &&
-		floatEqual(a.Tier2Ratio, b.Tier2Ratio) &&
-		a.Tier2Done == b.Tier2Done &&
-		floatEqual(a.Tier3, b.Tier3) &&
-		floatEqual(a.Tier3Ratio, b.Tier3Ratio) &&
-		a.Tier3Done == b.Tier3Done &&
-		floatEqual(a.RemainingRatio, b.RemainingRatio) &&
-		a.Status == b.Status &&
-		a.IsPlaceholder == b.IsPlaceholder
-}
-
 // SyncOpenPositions 从 freqtrade 拉取持仓，写入 live_orders/live_tiers。
 func (m *Manager) SyncOpenPositions(ctx context.Context) (int, error) {
 	if m == nil || m.client == nil || m.posRepo == nil {

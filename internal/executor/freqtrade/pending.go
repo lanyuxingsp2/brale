@@ -55,16 +55,6 @@ func (pe pendingExit) clone() pendingExit {
 	return clone
 }
 
-func (pe pendingExit) coversTier(name string) bool {
-	name = strings.ToLower(strings.TrimSpace(name))
-	for _, t := range pe.CoveredTiers {
-		if strings.EqualFold(t, name) {
-			return true
-		}
-	}
-	return false
-}
-
 func (pe pendingExit) coveredTierRange() string {
 	if len(pe.CoveredTiers) == 0 {
 		return ""
@@ -80,10 +70,6 @@ func (pe pendingExit) describeKind() string {
 		return strings.ToUpper(pe.Kind)
 	}
 	return pe.coveredTierRange()
-}
-
-func (pe pendingExit) shouldExpectFullClose() bool {
-	return pe.ForceFull || (pe.Kind == "take_profit" || pe.Kind == "stop_loss")
 }
 
 func (pe pendingExit) stateDesc() string {

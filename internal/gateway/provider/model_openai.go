@@ -67,7 +67,7 @@ func (c *OpenAIChatClient) Call(ctx context.Context, payload ChatPayload) (strin
 	var lastErr error
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt == 0 {
-			logger.Debugf("[AI] 请求: POST %s body=%s", url, redactHeaders(c.headersForLog()), string(b))
+			logger.Debugf("[AI] 请求: POST %s headers=%v body=%s", url, redactHeaders(c.headersForLog()), string(b))
 		}
 		req, _ := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(b))
 		for k, v := range c.headers() {

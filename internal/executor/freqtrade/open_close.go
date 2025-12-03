@@ -188,7 +188,7 @@ func (m *Manager) handleExit(ctx context.Context, msg WebhookMessage, event stri
 	logger.Debugf("freqtrade manager: exit payload trade=%d pair=%s dir=%s amount=%.6f stake=%.4f close_rate=%.4f order_rate=%.4f reason=%s profit_ratio=%.6f", tradeID, msg.Pair, msg.Direction, float64(msg.Amount), float64(msg.StakeAmount), float64(msg.CloseRate), float64(msg.OrderRate), strings.TrimSpace(msg.ExitReason), parseProfitRatio(msg.ProfitRatio))
 
 	m.mu.Lock()
-	pos, _ := m.positions[tradeID]
+	pos := m.positions[tradeID]
 	m.mu.Unlock()
 	symbol := strings.ToUpper(strings.TrimSpace(pos.Symbol))
 	if symbol == "" {

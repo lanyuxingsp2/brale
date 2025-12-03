@@ -1,0 +1,7 @@
+# 决策输入（Multi-Agent 汇总）
+{{if .LastDecisions}}{{.LastDecisions}}{{end}}
+{{if .Positions}}{{.Positions}}{{end}}
+{{if .Derivatives}}{{.Derivatives}}{{end}}
+{{if .Klines}}{{.Klines}}{{end}}
+{{if .Insights}}{{.Insights}}{{end}}
+{{.Guidelines}}

@@ -24,8 +24,32 @@ type WSUpdater struct {
 	startOnce sync.Once
 }
 
-func NewWSUpdater(s KlineStore, max int, src Source) *WSUpdater {
-	return &WSUpdater{Store: s, Max: max, Source: src}
+// WSUpdaterOption configures optional behavior for WSUpdater.
+type WSUpdaterOption func(*WSUpdater)
+
+// WithWSCallbacks sets connection callbacks invoked when the underlying stream connects/disconnects.
+func WithWSCallbacks(onConnect func(), onDisconnect func(error)) WSUpdaterOption {
+	return func(u *WSUpdater) {
+		u.OnConnected = onConnect
+		u.OnDisconnected = onDisconnect
+	}
+}
+
+// WithWSEventHandler installs a handler that receives every candle event before it is persisted.
+func WithWSEventHandler(handler func(CandleEvent)) WSUpdaterOption {
+	return func(u *WSUpdater) {
+		u.OnEvent = handler
+	}
+}
+
+func NewWSUpdater(s KlineStore, max int, src Source, opts ...WSUpdaterOption) *WSUpdater {
+	u := &WSUpdater{Store: s, Max: max, Source: src}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(u)
+		}
+	}
+	return u
 }
 
 // Update 将单根 K 线写入存储（附带裁剪）

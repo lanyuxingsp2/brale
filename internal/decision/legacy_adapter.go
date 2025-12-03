@@ -4,15 +4,20 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"math"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
+	"brale/internal/ai/parser"
 	brcfg "brale/internal/config"
+	"brale/internal/decision/render"
 	"brale/internal/gateway/provider"
 	"brale/internal/logger"
 	"brale/internal/market"
+	formatutil "brale/internal/pkg/format"
+	jsonutil "brale/internal/pkg/jsonutil"
+	textutil "brale/internal/pkg/text"
 	"brale/internal/strategy"
 
 	"github.com/google/uuid"
@@ -79,83 +84,9 @@ func (e *LegacyEngineAdapter) Decide(ctx context.Context, input Context) (Decisi
 	sys, usr := e.ComposePrompts(ctx, input, insights)
 	visionPayloads := e.collectVisionPayloads(input.Analysis)
 
-	// 调用所有已启用模型（可并行），带超时控制
-	outs := make([]ModelOutput, 0, len(e.Providers))
-	timeout := e.TimeoutSeconds
-	callOne := func(parent context.Context, p provider.ModelProvider) ModelOutput {
-		cctx := parent
-		var cancel context.CancelFunc
-		if timeout > 0 {
-			cctx, cancel = context.WithTimeout(parent, time.Duration(timeout)*time.Second)
-			defer cancel()
-		}
-		logger.Debugf("调用模型: %s", p.ID())
-		visionEnabled := p.SupportsVision()
-		payload := provider.ChatPayload{
-			System:     sys,
-			User:       usr,
-			ExpectJSON: p.ExpectsJSON(),
-		}
-		if visionEnabled {
-			payload.Images = visionPayloads
-		}
-		purpose := fmt.Sprintf("final decision (images=%d)", len(payload.Images))
-		logAIInput("main", p.ID(), purpose, payload.System, payload.User, summarizeImagePayloads(payload.Images))
-		raw, err := p.Call(cctx, payload)
-		logger.LogLLMResponse("main", p.ID(), purpose, raw)
-		parsed := DecisionResult{}
-		if err == nil {
-			if arr, ok := ExtractJSONArrayCompat(raw); ok {
-				var ds []Decision
-				if je := json.Unmarshal([]byte(arr), &ds); je == nil {
-					parsed.Decisions = ds
-					parsed.RawOutput = raw
-					parsed.RawJSON = arr
-					logger.Infof("模型 %s 解析到 %d 条决策", p.ID(), len(ds))
-				} else {
-					err = je
-				}
-			} else {
-				// 捕获未包含 JSON 数组的情况，记录部分原始文本帮助排查
-				snippet := raw
-				if len(snippet) > 160 {
-					snippet = snippet[:160] + "..."
-				}
-				logger.Warnf("模型 %s 响应未包含 JSON 决策数组，片段: %q", p.ID(), snippet)
-				err = fmt.Errorf("未找到 JSON 决策数组")
-			}
-		} else {
-			logger.Warnf("模型 %s 调用失败: %v", p.ID(), err)
-		}
-		return ModelOutput{
-			ProviderID:    p.ID(),
-			Raw:           raw,
-			Parsed:        parsed,
-			Err:           err,
-			Images:        cloneImagePayloads(payload.Images),
-			VisionEnabled: visionEnabled,
-			ImageCount:    len(payload.Images),
-		}
-	}
-	if e.Parallel {
-		enabled := 0
-		ch := make(chan ModelOutput, len(e.Providers))
-		for _, p := range e.Providers {
-			if p != nil && p.Enabled() {
-				enabled++
-				go func(p provider.ModelProvider) { ch <- callOne(ctx, p) }(p)
-			}
-		}
-		for i := 0; i < enabled; i++ {
-			outs = append(outs, <-ch)
-		}
-	} else {
-		for _, p := range e.Providers {
-			if p != nil && p.Enabled() {
-				outs = append(outs, callOne(ctx, p))
-			}
-		}
-	}
+	outs := e.collectModelOutputs(ctx, func(c context.Context, p provider.ModelProvider) ModelOutput {
+		return e.callProvider(c, p, sys, usr, visionPayloads)
+	})
 
 	if len(e.ProviderPreference) > 0 {
 		outs = orderOutputsByPreference(outs, e.ProviderPreference)
@@ -185,17 +116,17 @@ func (e *LegacyEngineAdapter) Decide(ctx context.Context, input Context) (Decisi
 				results = append(results, ResultRow{Provider: o.ProviderID, Action: "失败", Reason: reason, Failed: true})
 				continue
 			}
-			_, start, ok := ExtractJSONArrayWithIndex(o.Raw)
+			_, start, ok := parser.ExtractJSONWithOffset(o.Raw)
 			if ok {
 				thought := strings.TrimSpace(o.Raw[:start])
-				thought = TrimTo(thought, 2400)
+				thought = textutil.Truncate(thought, 2400)
 				thoughts = append(thoughts, ThoughtRow{Provider: o.ProviderID, Thought: thought})
 				// 逐条填充结果
 				if len(o.Parsed.Decisions) > 0 {
 					for _, d := range o.Parsed.Decisions {
 						r := ResultRow{Provider: o.ProviderID, Action: d.Action, Symbol: d.Symbol, Reason: d.Reasoning}
 						// 尽量不裁剪，但仍保底上限
-						r.Reason = TrimTo(r.Reason, 3600)
+						r.Reason = textutil.Truncate(r.Reason, 3600)
 						results = append(results, r)
 					}
 				} else {
@@ -209,10 +140,11 @@ func (e *LegacyEngineAdapter) Decide(ctx context.Context, input Context) (Decisi
 		}
 
 		// 渲染两张合并表
-		// 更大的列宽，尽量不裁剪
-		tThoughts := RenderThoughtsTable(thoughts, 180)
-		tResults := RenderResultsTable(results, 180)
-		logger.Infof("\n%s\n%s", tThoughts, tResults)
+		tThoughts := RenderThoughtsTable(thoughts, 0)
+		tResults := RenderResultsTable(results, 0)
+		logger.Infof("")
+		logger.InfoBlock(tThoughts)
+		logger.InfoBlock(tResults)
 	}
 	best, err := agg.Aggregate(ctx, outs)
 	if err != nil {
@@ -294,83 +226,17 @@ func (e *LegacyEngineAdapter) loadTemplate(name string) string {
 
 // buildUserSummary 将候选币种与当前仓位的摘要组装为 User 提示词
 func (e *LegacyEngineAdapter) buildUserSummary(ctx context.Context, input Context, insights []AgentInsight) string {
-	var b strings.Builder
-	b.WriteString("# 决策输入（Multi-Agent 汇总）\n")
-	e.appendLastDecisions(&b, input.LastDecisions)
-	e.appendCurrentPositions(&b, input.Account, input.Positions)
-	e.appendDerivativesMetrics(ctx, &b, input.Candidates) // Add derivatives metrics
-	e.appendKlineWindows(&b, input.Analysis)
-	e.logStructuredBlocksDebug(input.Analysis)
-	if len(insights) > 0 {
-		stageOrder := []string{agentStageIndicator, agentStagePattern, agentStageTrend}
-		stageMap := make(map[string]AgentInsight, len(insights))
-		for _, ins := range insights {
-			if ins.Stage == "" {
-				continue
-			}
-			stageMap[ins.Stage] = ins
-		}
-		writeInsight := func(ins AgentInsight) {
-			if ins.Stage == "" {
-				return
-			}
-			title := formatAgentStageTitle(ins.Stage)
-			provider := strings.TrimSpace(ins.ProviderID)
-			if provider == "" {
-				provider = "-"
-			}
-			prefix := fmt.Sprintf("- [%s | 模型:%s] ", title, provider)
-			if out := strings.TrimSpace(ins.Output); out != "" {
-				b.WriteString(prefix)
-				b.WriteString(TrimTo(out, 3600))
-				b.WriteString("\n")
-				return
-			}
-			status := "无可用结论"
-			if ins.Warned {
-				status += "（已通知）"
-			}
-			if errTxt := strings.TrimSpace(ins.Error); errTxt != "" {
-				errTxt = TrimTo(errTxt, 240)
-				status += ": " + errTxt
-			}
-			b.WriteString(prefix + status + "\n")
-		}
-		b.WriteString("\n## Multi-Agent Insights\n")
-		used := map[string]bool{}
-		for _, stage := range stageOrder {
-			if ins, ok := stageMap[stage]; ok {
-				writeInsight(ins)
-				used[stage] = true
-			}
-		}
-		for _, ins := range insights {
-			if used[ins.Stage] {
-				continue
-			}
-			writeInsight(ins)
-		}
-		b.WriteString("请基于这些多 Agent 结论，市场衍生品数据，以及时间窗口与风险约束输出最终 JSON 决策。\n")
-	} else {
-		b.WriteString("\n## Multi-Agent Insights\n- 暂无可用结论，请谨慎观望或输出空决策。\n")
+	sections := render.Sections{
+		LastDecisions: e.renderLastDecisions(input.LastDecisions),
+		Positions:     e.renderCurrentPositions(input.Account, input.Positions),
+		Derivatives:   e.renderDerivativesMetrics(ctx, input.Candidates),
+		Klines:        e.renderKlineWindows(input.Analysis),
+		Insights:      e.renderInsights(insights),
+		Guidelines:    e.decisionGuidelines(),
 	}
-	req := `请先输出简短的【思维链】（3句，说明判断依据与结论），换行后仅输出 JSON 数组。
-	JSON 每项必须包含 symbol、action、reasoning（写出 bull_score、bear_score、ATR 语境），并遵守：
-	- action 为 open_long/open_short：返回 take_profit、stop_loss（绝对价）、leverage（2–50）以及 tiers 对象（含 tier1/2/3 target 与 ratio，ratio 总值必须为100%。必须提供 position_size_usd）。
-    - 当当前有仓位时，action才可返回update_tiers，adjust_stop_loss，adjust_take_profit，不然不可返回。
-    - 只有在 Tier1 已实际成交（确认并执行平仓指令）时，才允许将止损抬到保本；未完成 Tier1 时不得因‘触达/接近’而上移止损。
-	- action 为 update_tiers：当结构或波动变化需要调整三段目标时输出，并在 tiers 对象内给出新的 target/ratio；**每个被调整的段必须同时提供 target 与 ratio**，且仅能修改未完成 (tier*_done=0) 的段位，已标注 ✅ 的段不可更改。
-	- action 为 adjust_stop_loss/adjust_take_profit：必须同时返回新的 stop_loss 与 take_profit，否则视为无效。
-    - 多个动作须按逻辑顺序列出，例如先 update_tiers 再 adjust_*。
-	- 除非结构彻底反转或紧急退出，不要输出 close_*；分段减仓由程序自动执行。
-	- 无操作时仅输出 hold。
-	示例:
-	【思维链】4h 需求区测试成功 + 15m EMA 多头排列，ATR 扩张允许 1.8R 目标。
-     [{"symbol":"BTCUSDT","action":"open_long","take_profit":73000,"position_size_usd":1000,"stop_loss":70500,"leverage":6,"tiers":{"tier1_target":71200,"tier1_ratio":0.33,"tier2_target":72000,"tier2_ratio":0.33,"tier3_target":73500,"tier3_ratio":0.34},"reasoning":"bull_score=72,bear_score=28，ATR Normal；H4 需求区与EMA55 共振"}]
-     `
-	b.WriteString(req)
-
-	return b.String()
+	summary := render.RenderSummary(e.PromptMgr, sections)
+	e.logStructuredBlocksDebug(input.Analysis)
+	return summary
 }
 
 type agentStageConfig struct {
@@ -416,6 +282,64 @@ func (e *LegacyEngineAdapter) runMultiAgents(ctx context.Context, input Context)
 	return out
 }
 
+func (e *LegacyEngineAdapter) renderInsights(insights []AgentInsight) string {
+	var b strings.Builder
+	b.WriteString("\n## Multi-Agent Insights\n")
+	if len(insights) == 0 {
+		b.WriteString("- 暂无可用结论，请谨慎观望或输出空决策。\n")
+		return b.String()
+	}
+	stageOrder := []string{agentStageIndicator, agentStagePattern, agentStageTrend}
+	stageMap := make(map[string]AgentInsight, len(insights))
+	for _, ins := range insights {
+		if ins.Stage == "" {
+			continue
+		}
+		stageMap[ins.Stage] = ins
+	}
+	writeInsight := func(ins AgentInsight) {
+		if ins.Stage == "" {
+			return
+		}
+		title := formatAgentStageTitle(ins.Stage)
+		provider := strings.TrimSpace(ins.ProviderID)
+		if provider == "" {
+			provider = "-"
+		}
+		prefix := fmt.Sprintf("- [%s | 模型:%s] ", title, provider)
+		if out := strings.TrimSpace(ins.Output); out != "" {
+			b.WriteString(prefix)
+			b.WriteString(textutil.Truncate(out, 3600))
+			b.WriteString("\n")
+			return
+		}
+		status := "无可用结论"
+		if ins.Warned {
+			status += "（已通知）"
+		}
+		if errTxt := strings.TrimSpace(ins.Error); errTxt != "" {
+			errTxt = textutil.Truncate(errTxt, 240)
+			status += ": " + errTxt
+		}
+		b.WriteString(prefix + status + "\n")
+	}
+	used := map[string]bool{}
+	for _, stage := range stageOrder {
+		if ins, ok := stageMap[stage]; ok {
+			writeInsight(ins)
+			used[stage] = true
+		}
+	}
+	for _, ins := range insights {
+		if used[ins.Stage] {
+			continue
+		}
+		writeInsight(ins)
+	}
+	b.WriteString("请基于这些多 Agent 结论，市场衍生品数据，以及时间窗口与风险约束输出最终 JSON 决策。\n")
+	return b.String()
+}
+
 func (e *LegacyEngineAdapter) executeAgentStage(ctx context.Context, stage agentStageConfig, ctxs []AnalysisContext, cfg brcfg.MultiAgentConfig) AgentInsight {
 	tpl := strings.TrimSpace(e.loadTemplate(stage.tplName))
 	if tpl == "" {
@@ -450,7 +374,7 @@ func (e *LegacyEngineAdapter) executeAgentStage(ctx context.Context, stage agent
 		logger.Warnf("%s agent 调用失败: %v", stage.name, err)
 		return ins
 	}
-	trimmed := strings.TrimSpace(TrimTo(out, 4000))
+	trimmed := strings.TrimSpace(textutil.Truncate(out, 4000))
 	if trimmed == "" {
 		ins.Error = "模型返回空文本"
 		ins.Warned = e.emitAgentWarning(stage.name, provider.ID(), ins.Error)
@@ -529,13 +453,122 @@ func summarizeImagePayloads(imgs []provider.ImagePayload) []string {
 		}
 		b.WriteString(desc)
 		if data := strings.TrimSpace(img.DataURI); data != "" {
-			preview := TrimTo(data, 512)
+			preview := textutil.Truncate(data, 512)
 			b.WriteString("\nDATA: ")
 			b.WriteString(preview)
 		}
 		out = append(out, b.String())
 	}
 	return out
+}
+
+func (e *LegacyEngineAdapter) callProvider(parent context.Context, p provider.ModelProvider, system, user string, baseImages []provider.ImagePayload) ModelOutput {
+	cctx := parent
+	var cancel context.CancelFunc
+	if timeout := e.TimeoutSeconds; timeout > 0 {
+		cctx, cancel = context.WithTimeout(parent, time.Duration(timeout)*time.Second)
+		defer cancel()
+	}
+	logger.Debugf("调用模型: %s", p.ID())
+	visionEnabled := p.SupportsVision()
+	payload := provider.ChatPayload{
+		System:     system,
+		User:       user,
+		ExpectJSON: p.ExpectsJSON(),
+	}
+	if visionEnabled && len(baseImages) > 0 {
+		payload.Images = cloneImagePayloads(baseImages)
+	}
+	purpose := fmt.Sprintf("final decision (images=%d)", len(payload.Images))
+	logAIInput("main", p.ID(), purpose, payload.System, payload.User, summarizeImagePayloads(payload.Images))
+	raw, err := p.Call(cctx, payload)
+	logger.LogLLMResponse("main", p.ID(), purpose, raw)
+
+	parsed := DecisionResult{}
+	if err == nil {
+		if arr, ok := parser.ExtractJSON(raw); ok {
+			var ds []Decision
+			if je := json.Unmarshal([]byte(arr), &ds); je == nil {
+				parsed.Decisions = ds
+				parsed.RawOutput = raw
+				parsed.RawJSON = arr
+				logger.Infof("模型 %s 解析到 %d 条决策", p.ID(), len(ds))
+			} else {
+				err = je
+			}
+		} else {
+			snippet := raw
+			if len(snippet) > 160 {
+				snippet = snippet[:160] + "..."
+			}
+			logger.Warnf("模型 %s 响应未包含 JSON 决策数组，片段: %q", p.ID(), snippet)
+			err = fmt.Errorf("未找到 JSON 决策数组")
+		}
+	}
+	if err != nil {
+		logger.Warnf("模型 %s 调用失败: %v", p.ID(), err)
+	}
+	return ModelOutput{
+		ProviderID:    p.ID(),
+		Raw:           raw,
+		Parsed:        parsed,
+		Err:           err,
+		Images:        cloneImagePayloads(payload.Images),
+		VisionEnabled: visionEnabled,
+		ImageCount:    len(payload.Images),
+	}
+}
+
+func (e *LegacyEngineAdapter) collectModelOutputs(ctx context.Context, call func(context.Context, provider.ModelProvider) ModelOutput) []ModelOutput {
+	if !e.Parallel {
+		outs := make([]ModelOutput, 0, len(e.Providers))
+		for _, p := range e.Providers {
+			if p != nil && p.Enabled() {
+				outs = append(outs, call(ctx, p))
+			}
+		}
+		return outs
+	}
+	enabled := 0
+	for _, p := range e.Providers {
+		if p != nil && p.Enabled() {
+			enabled++
+		}
+	}
+	if enabled == 0 {
+		return nil
+	}
+	outs := make([]ModelOutput, 0, enabled)
+	var mu sync.Mutex
+	eg, egCtx := errgroup.WithContext(ctx)
+	for _, p := range e.Providers {
+		if p == nil || !p.Enabled() {
+			continue
+		}
+		provider := p
+		eg.Go(func() error {
+			out := invokeProviderSafe(egCtx, provider, call)
+			mu.Lock()
+			outs = append(outs, out)
+			mu.Unlock()
+			return nil
+		})
+	}
+	_ = eg.Wait()
+	return outs
+}
+
+func invokeProviderSafe(ctx context.Context, p provider.ModelProvider, call func(context.Context, provider.ModelProvider) ModelOutput) (out ModelOutput) {
+	defer func() {
+		if r := recover(); r != nil {
+			logger.Warnf("模型 %s 调用 panic: %v", p.ID(), r)
+			out = ModelOutput{
+				ProviderID: p.ID(),
+				Err:        fmt.Errorf("panic: %v", r),
+			}
+		}
+	}()
+	return call(ctx, p)
 }
 
 func cloneOutputs(src []ModelOutput) []ModelOutput {
@@ -605,23 +638,11 @@ func logAIInput(kind, providerID, purpose, systemPrompt, userPrompt string, imag
 	if strings.TrimSpace(kind) == "" {
 		kind = "unknown"
 	}
-	sysPreview := TrimTo(systemPrompt, 2000)
-	userPreview := TrimTo(userPrompt, 4000)
+	sysPreview := textutil.Truncate(systemPrompt, 2000)
+	userPreview := textutil.Truncate(userPrompt, 4000)
 	logger.Debugf("[AI][request] kind=%s provider=%s purpose=%s system_prompt=%q user_prompt=%q",
 		kind, strings.TrimSpace(providerID), purpose, sysPreview, userPreview)
 	logger.LogLLMRequest(kind, strings.TrimSpace(providerID), purpose, systemPrompt, userPrompt, imageNotes, "")
-}
-
-// formatVolumeSlice 将成交量切片格式化为紧凑的字符串，例如 "[123, 456, 789]"
-func formatVolumeSlice(volumes []float64) string {
-	if len(volumes) == 0 {
-		return "[]"
-	}
-	parts := make([]string, len(volumes))
-	for i, v := range volumes {
-		parts[i] = fmt.Sprintf("%.0f", v)
-	}
-	return "[" + strings.Join(parts, ", ") + "]"
 }
 
 func (e *LegacyEngineAdapter) emitAgentWarning(stage, providerID, reason string) bool {
@@ -635,7 +656,7 @@ func (e *LegacyEngineAdapter) emitAgentWarning(stage, providerID, reason string)
 	if providerID != "" {
 		msg = fmt.Sprintf("[Multi-Agent 警告] %s(%s) 无输出: %s", title, providerID, reason)
 	}
-	logger.Warnf(msg)
+	logger.Warnf("%s", msg)
 	n := e.AgentNotifier
 	if n == nil {
 		return false
@@ -661,22 +682,22 @@ func (e *LegacyEngineAdapter) logStructuredBlocksDebug(ctxs []AnalysisContext) {
 		ac := ctxs[i]
 		b.WriteString(fmt.Sprintf("* %s %s (%s)\n", strings.ToUpper(ac.Symbol), ac.Interval, ac.ForecastHorizon))
 		if ac.PatternReport != "" {
-			b.WriteString("  形态: " + TrimTo(ac.PatternReport, 240) + "\n")
+			b.WriteString("  形态: " + textutil.Truncate(ac.PatternReport, 240) + "\n")
 		}
 		if ac.TrendReport != "" {
-			b.WriteString("  趋势: " + TrimTo(ac.TrendReport, 240) + "\n")
+			b.WriteString("  趋势: " + textutil.Truncate(ac.TrendReport, 240) + "\n")
 		}
 		if ac.ImageNote != "" {
-			b.WriteString("  图示: " + TrimTo(ac.ImageNote, 160) + "\n")
+			b.WriteString("  图示: " + textutil.Truncate(ac.ImageNote, 160) + "\n")
 		}
 		if ac.IndicatorJSON != "" {
 			b.WriteString("  指标JSON:\n")
-			b.WriteString(TrimTo(PrettyJSON(ac.IndicatorJSON), 600))
+			b.WriteString(textutil.Truncate(jsonutil.Pretty(ac.IndicatorJSON), 600))
 			b.WriteString("\n")
 		}
 		if ac.KlineJSON != "" {
 			b.WriteString("  RawKline:\n")
-			b.WriteString(TrimTo(ac.KlineJSON, 600))
+			b.WriteString(textutil.Truncate(ac.KlineJSON, 600))
 			b.WriteString("\n")
 		}
 	}
@@ -684,9 +705,9 @@ func (e *LegacyEngineAdapter) logStructuredBlocksDebug(ctxs []AnalysisContext) {
 	logger.Debugf("%s", b.String())
 }
 
-func (e *LegacyEngineAdapter) appendLastDecisions(b *strings.Builder, records []DecisionMemory) {
-	if len(records) == 0 || b == nil {
-		return
+func (e *LegacyEngineAdapter) renderLastDecisions(records []DecisionMemory) string {
+	if len(records) == 0 {
+		return ""
 	}
 	mem := append([]DecisionMemory(nil), records...)
 	sort.Slice(mem, func(i, j int) bool {
@@ -695,6 +716,7 @@ func (e *LegacyEngineAdapter) appendLastDecisions(b *strings.Builder, records []
 		}
 		return mem[i].Symbol < mem[j].Symbol
 	})
+	var b strings.Builder
 	b.WriteString("\n## 上次 AI 决策概览\n")
 	for _, m := range mem {
 		age := time.Since(m.DecidedAt).Round(time.Minute)
@@ -733,6 +755,7 @@ func (e *LegacyEngineAdapter) appendLastDecisions(b *strings.Builder, records []
 		}
 	}
 	b.WriteString("请结合上轮思路判断是否需要延续。\n")
+	return b.String()
 }
 
 func trimReasoning(text string, max int) string {
@@ -752,10 +775,8 @@ func isOpenAction(action string) bool {
 	return strings.HasPrefix(action, "open_")
 }
 
-func (e *LegacyEngineAdapter) appendCurrentPositions(b *strings.Builder, account AccountSnapshot, positions []PositionSnapshot) {
-	if b == nil {
-		return
-	}
+func (e *LegacyEngineAdapter) renderCurrentPositions(account AccountSnapshot, positions []PositionSnapshot) string {
+	var b strings.Builder
 	if account.Total > 0 || account.Available > 0 {
 		currency := strings.ToUpper(strings.TrimSpace(account.Currency))
 		if currency == "" {
@@ -774,7 +795,7 @@ func (e *LegacyEngineAdapter) appendCurrentPositions(b *strings.Builder, account
 	b.WriteString("\n## 当前持仓\n")
 	if len(positions) == 0 {
 		b.WriteString("- 当前无持仓 (0)，请勿返回 close_* / update_tiers / adjust_* 指令。\n")
-		return
+		return b.String()
 	}
 	for _, pos := range positions {
 		line := fmt.Sprintf("- %s %s entry=%.4f",
@@ -798,16 +819,16 @@ func (e *LegacyEngineAdapter) appendCurrentPositions(b *strings.Builder, account
 			line += fmt.Sprintf(" sl=%.4f", pos.StopLoss)
 		}
 		if pos.UnrealizedPnPct != 0 || pos.UnrealizedPn != 0 {
-			line += fmt.Sprintf(" pnl=%s(%+.2f)", formatPercent(pos.UnrealizedPnPct), pos.UnrealizedPn)
+			line += fmt.Sprintf(" pnl=%s(%+.2f)", formatutil.Percent(pos.UnrealizedPnPct), pos.UnrealizedPn)
 		}
 		if pos.HoldingMs > 0 {
-			line += fmt.Sprintf(" holding=%s", formatHoldingDuration(pos.HoldingMs))
+			line += fmt.Sprintf(" holding=%s", formatutil.Duration(pos.HoldingMs))
 		}
 		if pos.RemainingRatio > 0 {
-			line += fmt.Sprintf(" remaining=%s", formatPercent(pos.RemainingRatio))
+			line += fmt.Sprintf(" remaining=%s", formatutil.Percent(pos.RemainingRatio))
 		}
 		if pos.AccountRatio > 0 {
-			line += fmt.Sprintf(" 占比=%s", formatPercent(pos.AccountRatio))
+			line += fmt.Sprintf(" 占比=%s", formatutil.Percent(pos.AccountRatio))
 		}
 		tierLines := buildTierLines(pos)
 		if tierLines != "" {
@@ -819,14 +840,24 @@ func (e *LegacyEngineAdapter) appendCurrentPositions(b *strings.Builder, account
 		b.WriteString(line + "\n")
 	}
 	b.WriteString("请结合上述仓位判断是否需要平仓、加仓或调整计划。\n")
+	return b.String()
 }
 
-// appendDerivativesMetrics 将 OI 与资金费率附加到 User 提示词中
-func (e *LegacyEngineAdapter) appendDerivativesMetrics(ctx context.Context, b *strings.Builder, candidates []string) {
-	if b == nil || e.Metrics == nil || !e.IncludeOI && !e.IncludeFunding || len(candidates) == 0 {
-		return
+func (e *LegacyEngineAdapter) decisionGuidelines() string {
+	if e.PromptMgr != nil {
+		if tpl, ok := e.PromptMgr.Get("decision_guideline"); ok && strings.TrimSpace(tpl) != "" {
+			return tpl + "\n"
+		}
 	}
+	return defaultDecisionGuideline
+}
 
+// renderDerivativesMetrics 将 OI 与资金费率附加到 User 提示词中
+func (e *LegacyEngineAdapter) renderDerivativesMetrics(ctx context.Context, candidates []string) string {
+	if e.Metrics == nil || (!e.IncludeOI && !e.IncludeFunding) || len(candidates) == 0 {
+		return ""
+	}
+	var b strings.Builder
 	b.WriteString("\n## 市场衍生品数据 (Market Derivatives Data)\n")
 	for _, sym := range candidates {
 		metricsData, ok := e.Metrics.Get(sym)
@@ -838,7 +869,6 @@ func (e *LegacyEngineAdapter) appendDerivativesMetrics(ctx context.Context, b *s
 		b.WriteString(fmt.Sprintf("- %s:\n", strings.ToUpper(sym)))
 		if e.IncludeOI {
 			b.WriteString(fmt.Sprintf("  - 最新未平仓量 (OI): %.2f\n", metricsData.OI))
-			// 显示 OI 历史变化率
 			for _, tf := range e.Metrics.GetTargetTimeframes() {
 				if oldOI, ok := metricsData.OIHistory[tf]; ok && oldOI > 0 {
 					changePct := (metricsData.OI - oldOI) / oldOI * 100
@@ -853,21 +883,22 @@ func (e *LegacyEngineAdapter) appendDerivativesMetrics(ctx context.Context, b *s
 		}
 	}
 	b.WriteString("请结合这些衍生品数据评估市场情绪和资金动向。\n")
+	return b.String()
 }
 
 func buildTierLines(pos PositionSnapshot) string {
 	parts := make([]string, 0, 3)
 	if pos.Tier1Target > 0 {
 		parts = append(parts, fmt.Sprintf("Tier1 %.4f (%s)%s",
-			pos.Tier1Target, formatPercent(pos.Tier1Ratio), doneFlag(pos.Tier1Done)))
+			pos.Tier1Target, formatutil.Percent(pos.Tier1Ratio), doneFlag(pos.Tier1Done)))
 	}
 	if pos.Tier2Target > 0 {
 		parts = append(parts, fmt.Sprintf("Tier2 %.4f (%s)%s",
-			pos.Tier2Target, formatPercent(pos.Tier2Ratio), doneFlag(pos.Tier2Done)))
+			pos.Tier2Target, formatutil.Percent(pos.Tier2Ratio), doneFlag(pos.Tier2Done)))
 	}
 	if pos.Tier3Target > 0 {
 		parts = append(parts, fmt.Sprintf("Tier3 %.4f (%s)%s",
-			pos.Tier3Target, formatPercent(pos.Tier3Ratio), doneFlag(pos.Tier3Done)))
+			pos.Tier3Target, formatutil.Percent(pos.Tier3Ratio), doneFlag(pos.Tier3Done)))
 	}
 	if len(parts) == 0 {
 		return ""
@@ -896,9 +927,9 @@ type klineWindow struct {
 	Bars     []market.Candle
 }
 
-func (e *LegacyEngineAdapter) appendKlineWindows(b *strings.Builder, ctxs []AnalysisContext) {
-	if b == nil || len(ctxs) == 0 {
-		return
+func (e *LegacyEngineAdapter) renderKlineWindows(ctxs []AnalysisContext) string {
+	if len(ctxs) == 0 {
+		return ""
 	}
 	rank := buildIntervalRank(e.Intervals)
 	windows := make([]klineWindow, 0, len(ctxs))
@@ -924,7 +955,7 @@ func (e *LegacyEngineAdapter) appendKlineWindows(b *strings.Builder, ctxs []Anal
 		windows = append(windows, win)
 	}
 	if len(windows) == 0 {
-		return
+		return ""
 	}
 	sort.Slice(windows, func(i, j int) bool {
 		if windows[i].Symbol == windows[j].Symbol {
@@ -937,6 +968,7 @@ func (e *LegacyEngineAdapter) appendKlineWindows(b *strings.Builder, ctxs []Anal
 		}
 		return windows[i].Symbol < windows[j].Symbol
 	})
+	var b strings.Builder
 	b.WriteString("\n## Price Windows（最近 6 根，最新在前）\n")
 	for _, win := range windows {
 		header := fmt.Sprintf("- %s %s", win.Symbol, win.Interval)
@@ -947,21 +979,22 @@ func (e *LegacyEngineAdapter) appendKlineWindows(b *strings.Builder, ctxs []Anal
 		b.WriteString("  Bars:\n")
 		for idx := len(win.Bars) - 1; idx >= 0; idx-- {
 			bar := win.Bars[idx]
-			b.WriteString(fmt.Sprintf("    [%s, o=%s, h=%s, l=%s, c=%s, v=%s]\n",
-				formatCandleTime(bar),
-				formatKlinePrice(bar.Open),
-				formatKlinePrice(bar.High),
-				formatKlinePrice(bar.Low),
-				formatKlinePrice(bar.Close),
-				formatKlineVolume(bar.Volume),
+			b.WriteString(fmt.Sprintf("    [%s, o=%s, h=%s, l=%s, c=%s, v=%.2f]\n",
+				bar.TimeString(),
+				formatutil.Float(bar.Open, 4),
+				formatutil.Float(bar.High, 4),
+				formatutil.Float(bar.Low, 4),
+				formatutil.Float(bar.Close, 4),
+				bar.Volume,
 			))
 		}
-		if summary := describeKlineSnapshot(win.Bars, win.Interval, win.Trend); summary != "" {
+		if summary := market.Candles(win.Bars).Snapshot(win.Interval, win.Trend); summary != "" {
 			b.WriteString("  Snapshot: " + summary + "\n")
 		}
 		b.WriteString("\n")
 	}
 	b.WriteString("请结合这些时间窗口评估当前价格位置与动量。\n")
+	return b.String()
 }
 
 func buildIntervalRank(intervals []string) map[string]int {
@@ -1008,102 +1041,4 @@ func parseRecentCandles(raw string, keep int) ([]market.Candle, error) {
 		candles = candles[len(candles)-keep:]
 	}
 	return candles, nil
-}
-
-func formatCandleTime(c market.Candle) string {
-	ts := c.CloseTime
-	if ts == 0 {
-		ts = c.OpenTime
-	}
-	if ts == 0 {
-		return "-"
-	}
-	return time.UnixMilli(ts).UTC().Format("01-02 15:04") + "Z"
-}
-
-func formatKlinePrice(v float64) string {
-	return trimFloatPrecision(v, 4)
-}
-
-func formatKlineVolume(v float64) string {
-	return trimFloatPrecision(v, 2)
-}
-
-func trimFloatPrecision(v float64, dec int) string {
-	if dec < 0 {
-		dec = 4
-	}
-	out := fmt.Sprintf("%.*f", dec, v)
-	out = strings.TrimRight(strings.TrimRight(out, "0"), ".")
-	if out == "" {
-		return "0"
-	}
-	return out
-}
-
-func describeKlineSnapshot(bars []market.Candle, interval, trend string) string {
-	if len(bars) == 0 {
-		return ""
-	}
-	first := bars[0]
-	last := bars[len(bars)-1]
-	base := first.Close
-	if base == 0 {
-		base = first.Open
-	}
-	changePct := 0.0
-	if base != 0 {
-		changePct = (last.Close - base) / base * 100
-	}
-	low := math.MaxFloat64
-	high := -math.MaxFloat64
-	for _, bar := range bars {
-		if bar.Low < low {
-			low = bar.Low
-		}
-		if bar.High > high {
-			high = bar.High
-		}
-	}
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("close≈%s", formatKlinePrice(last.Close)))
-	iv := strings.TrimSpace(interval)
-	if iv == "" {
-		iv = "window"
-	}
-	if base != 0 {
-		sb.WriteString(fmt.Sprintf(" (%+.2f%%/%s)", changePct, iv))
-	}
-	if low != math.MaxFloat64 && high != -math.MaxFloat64 {
-		sb.WriteString(fmt.Sprintf(", 区间 %s–%s", formatKlinePrice(low), formatKlinePrice(high)))
-	}
-	if t := strings.TrimSpace(trend); t != "" {
-		sb.WriteString(", " + TrimTo(t, 200))
-	}
-	return sb.String()
-}
-
-func formatHoldingDuration(ms int64) string {
-	if ms <= 0 {
-		return "-"
-	}
-	d := time.Duration(ms) * time.Millisecond
-	h := d / time.Hour
-	d -= h * time.Hour
-	m := d / time.Minute
-	d -= m * time.Minute
-	if h > 0 {
-		return fmt.Sprintf("%dh%dm", h, m)
-	}
-	if m > 0 {
-		return fmt.Sprintf("%dm%ds", m, d/time.Second)
-	}
-	return fmt.Sprintf("%ds", d/time.Second)
-}
-
-func formatPercent(val float64) string {
-	if val == 0 {
-		return "0%"
-	}
-	return fmt.Sprintf("%.0f%%", val*100)
 }

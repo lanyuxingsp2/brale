@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"brale/internal/ai/parser"
 	brcfg "brale/internal/config"
 	"brale/internal/decision"
 	freqexec "brale/internal/executor/freqtrade"
@@ -16,7 +17,7 @@ import (
 	"brale/internal/gateway/notifier"
 	"brale/internal/logger"
 	"brale/internal/market"
-	brmarket "brale/internal/market"
+	"brale/internal/pkg/text"
 	"brale/internal/store"
 )
 
@@ -24,7 +25,7 @@ import (
 type LiveService struct {
 	cfg                 *brcfg.Config
 	ks                  market.KlineStore
-	updater             *brmarket.WSUpdater
+	updater             *market.WSUpdater
 	engine              decision.Decider
 	tg                  *notifier.Telegram
 	decLogs             *database.DecisionLogStore
@@ -119,6 +120,10 @@ func (s *LiveService) Run(ctx context.Context) error {
 	if decisionInterval <= 0 {
 		decisionInterval = time.Minute
 	}
+	return s.runDecisionLoop(ctx, decisionInterval)
+}
+
+func (s *LiveService) runDecisionLoop(ctx context.Context, decisionInterval time.Duration) error {
 	decisionTicker := time.NewTicker(decisionInterval)
 	cacheTicker := time.NewTicker(15 * time.Second)
 	statsTicker := time.NewTicker(60 * time.Second)
@@ -127,8 +132,8 @@ func (s *LiveService) Run(ctx context.Context) error {
 	defer statsTicker.Stop()
 
 	human := fmt.Sprintf("%d 秒", int(decisionInterval.Seconds()))
-	if cfg.AI.DecisionIntervalSeconds%60 == 0 {
-		human = fmt.Sprintf("%d 分钟", cfg.AI.DecisionIntervalSeconds/60)
+	if seconds := int(decisionInterval.Seconds()); seconds%60 == 0 {
+		human = fmt.Sprintf("%d 分钟", seconds/60)
 	}
 	logger.Infof("Brale 启动完成。开始订阅 K 线并写入缓存；每 %s 进行一次 AI 决策。按 Ctrl+C 退出。\n", human)
 
@@ -166,22 +171,7 @@ func (s *LiveService) Run(ctx context.Context) error {
 	}
 }
 
-// Close 释放 LiveService 持有的资源。
-func (s *LiveService) Close() {
-	if s == nil {
-		return
-	}
-	if s.updater != nil {
-		s.updater.Close()
-	}
-	if s.decLogs != nil {
-		_ = s.decLogs.Close()
-	}
-}
-
-func (s *LiveService) tickDecision(ctx context.Context) error {
-	cfg := s.cfg
-	start := time.Now()
+func (s *LiveService) prepareDecisionInput(ctx context.Context) (decision.Context, bool) {
 	input := decision.Context{Candidates: s.symbols}
 	input.Account = s.accountSnapshot()
 	if exp, ok := s.ks.(store.SnapshotExporter); ok {
@@ -194,7 +184,7 @@ func (s *LiveService) tickDecision(ctx context.Context) error {
 			Exporter:    exp,
 			Symbols:     symbols,
 			Intervals:   s.hIntervals,
-			Limit:       cfg.Kline.MaxCached,
+			Limit:       s.cfg.Kline.MaxCached,
 			SliceLength: s.profile.AnalysisSlice,
 			SliceDrop:   s.profile.SliceDropTail,
 			HorizonName: s.horizonName,
@@ -202,70 +192,86 @@ func (s *LiveService) tickDecision(ctx context.Context) error {
 			WithImages:  s.visionReady,
 		})
 	}
-	positions := s.livePositions(input.Account)
-	input.Positions = positions
-	hasPositions := len(positions) > 0
-	logger.Infof("AI 决策循环开始 candidates=%d positions=%d", len(input.Candidates), len(positions))
+	input.Positions = s.livePositions(input.Account)
+	hasPositions := len(input.Positions) > 0
 	if !hasPositions {
 		if s.lastDec != nil {
 			s.lastDec.Reset()
 		}
 		s.lastRawJSON = ""
-	} else if s.includeLastDecision && s.lastDec != nil {
-		snap := s.filterLastDecisionSnapshot(s.lastDec.Snapshot(time.Now()), positions)
+		return input, false
+	}
+	if s.includeLastDecision && s.lastDec != nil {
+		snap := s.filterLastDecisionSnapshot(s.lastDec.Snapshot(time.Now()), input.Positions)
 		if len(snap) > 0 {
 			input.LastDecisions = snap
 			input.LastRawJSON = s.lastRawJSON
 		}
 	}
-	res, err := s.engine.Decide(ctx, input)
-	if err != nil {
-		return err
+	return input, true
+}
+
+func (s *LiveService) logModelOutput(res decision.DecisionResult) {
+	raw := strings.TrimSpace(res.RawOutput)
+	if raw == "" {
+		return
 	}
-	traceID := s.ensureTraceID(res.TraceID)
-	if len(res.Decisions) == 0 {
-		logger.Infof("AI 决策为空（观望） trace=%s 耗时=%s", traceID, time.Since(start))
+	_, start, ok := parser.ExtractJSONWithOffset(raw)
+	if ok {
+		cot := strings.TrimSpace(raw[:start])
+		cot = text.Truncate(cot, 4800)
+		logger.Infof("")
+		logger.InfoBlock(decision.RenderBlockTable("AI[final] 思维链", cot))
+		return
+	}
+	logger.Infof("")
+	logger.InfoBlock(decision.RenderBlockTable("AI[final] 思维链", "失败"))
+}
+
+func (s *LiveService) notifyMetaSummary(res decision.DecisionResult) {
+	if s.tg == nil || !strings.EqualFold(s.cfg.AI.Aggregation, "meta") {
+		return
+	}
+	summary := strings.TrimSpace(res.MetaSummary)
+	if summary == "" {
+		return
+	}
+	if err := s.sendMetaSummaryTelegram(summary); err != nil {
+		logger.Warnf("Telegram 推送失败(meta): %v", err)
+	}
+}
+
+func (s *LiveService) prepareDecisions(items []decision.Decision, hasPositions bool) []decision.Decision {
+	if len(items) == 0 {
 		return nil
 	}
-	if res.RawOutput != "" {
-		_, start, ok := decision.ExtractJSONArrayWithIndex(res.RawOutput)
-		if ok {
-			cot := strings.TrimSpace(res.RawOutput[:start])
-			// pretty := decision.PrettyJSON(arr)
-			cot = decision.TrimTo(cot, 4800)
-			// pretty = decision.TrimTo(pretty, 3600)
-			t1 := decision.RenderBlockTable("AI[final] 思维链", cot)
-			// t2 := decision.RenderBlockTable("AI[final] 结果(JSON)", pretty)
-			logger.Infof("\n%s", t1)
-		} else {
-			t1 := decision.RenderBlockTable("AI[final] 思维链", "失败")
-			// t2 := decision.RenderBlockTable("AI[final] 结果(JSON)", "失败")
-			logger.Infof("\n%s", t1)
-		}
+	prepared := make([]decision.Decision, len(items))
+	copy(prepared, items)
+	for i := range prepared {
+		prepared[i].Action = decision.NormalizeAction(prepared[i].Action)
 	}
-	if s.tg != nil && cfg.AI.Aggregation == "meta" && strings.TrimSpace(res.MetaSummary) != "" {
-		if err := s.sendMetaSummaryTelegram(res.MetaSummary); err != nil {
-			logger.Warnf("Telegram 推送失败(meta): %v", err)
-		}
+	prepared = decision.OrderAndDedup(prepared)
+	prepared = s.filterPositionDependentDecisions(prepared, hasPositions)
+	if len(prepared) > 0 {
+		logger.Infof("")
+		logger.InfoBlock(decision.RenderFinalDecisionsTable(prepared, 0))
 	}
-	for i := range res.Decisions {
-		res.Decisions[i].Action = decision.NormalizeAction(res.Decisions[i].Action)
-	}
-	res.Decisions = decision.OrderAndDedup(res.Decisions)
-	res.Decisions = s.filterPositionDependentDecisions(res.Decisions, hasPositions)
-	if len(res.Decisions) > 0 {
-		tFinal := decision.RenderFinalDecisionsTable(res.Decisions, 180)
-		logger.Infof("\n%s", tFinal)
-	}
+	return prepared
+}
 
+func (s *LiveService) executeDecisions(ctx context.Context, decisions []decision.Decision, traceID string) []decision.Decision {
+	if len(decisions) == 0 {
+		return nil
+	}
+	cfg := s.cfg
 	validateIv := ""
 	if len(s.hIntervals) > 0 {
 		validateIv = s.hIntervals[0]
 	}
-
-	accepted := make([]decision.Decision, 0, len(res.Decisions))
+	accepted := make([]decision.Decision, 0, len(decisions))
 	newOpens := 0
-	for _, d := range res.Decisions {
+	for _, original := range decisions {
+		d := original
 		marketPrice := 0.0
 		s.applyTradingDefaults(&d)
 		if err := decision.Validate(&d); err != nil {
@@ -294,40 +300,81 @@ func (s *LiveService) tickDecision(ctx context.Context) error {
 		}
 		accepted = append(accepted, d)
 		s.logDecision(d)
-
-		if d.Action == "open_long" || d.Action == "open_short" {
-			if newOpens >= cfg.Advanced.MaxOpensPerCycle {
-				logger.Infof("跳过超出本周期开仓上限: %s %s", d.Symbol, d.Action)
+		if d.Action != "open_long" && d.Action != "open_short" {
+			continue
+		}
+		if newOpens >= cfg.Advanced.MaxOpensPerCycle {
+			logger.Infof("跳过超出本周期开仓上限: %s %s", d.Symbol, d.Action)
+			continue
+		}
+		key := d.Symbol + "#" + d.Action
+		if prev, ok := s.lastOpen[key]; ok {
+			cooldown := time.Duration(cfg.Advanced.OpenCooldownSeconds) * time.Second
+			if time.Since(prev) < cooldown {
+				remain := float64(cooldown-time.Since(prev)) / float64(time.Second)
+				logger.Infof("跳过频繁开仓（冷却中）: %s 剩余 %.0fs", key, remain)
 				continue
 			}
-			key := d.Symbol + "#" + d.Action
-			if prev, ok := s.lastOpen[key]; ok {
-				if time.Since(prev) < time.Duration(cfg.Advanced.OpenCooldownSeconds)*time.Second {
-					remain := float64(time.Duration(cfg.Advanced.OpenCooldownSeconds)*time.Second-time.Since(prev)) / float64(time.Second)
-					logger.Infof("跳过频繁开仓（冷却中）: %s 剩余 %.0fs", key, remain)
-					continue
-				}
-			}
-			s.lastOpen[key] = time.Now()
-			newOpens++
-			s.recordLiveOrder(ctx, d, marketPrice, validateIv)
-			s.notifyOpen(ctx, d, marketPrice, validateIv)
 		}
+		s.lastOpen[key] = time.Now()
+		newOpens++
+		s.recordLiveOrder(ctx, d, marketPrice, validateIv)
+		s.notifyOpen(ctx, d, marketPrice, validateIv)
 	}
-	if len(accepted) > 0 {
-		s.persistLastDecisions(ctx, accepted)
-		if raw := strings.TrimSpace(res.RawJSON); raw != "" {
-			s.lastRawJSON = raw
-		} else if buf, err := json.Marshal(accepted); err == nil {
-			s.lastRawJSON = string(buf)
-		}
+	return accepted
+}
+
+func (s *LiveService) persistDecisionOutcome(ctx context.Context, accepted []decision.Decision, rawJSON string) {
+	if len(accepted) == 0 {
+		return
 	}
-	logger.Infof("AI 决策循环结束 trace=%s 原始=%d 接受=%d 耗时=%s", traceID, len(res.Decisions), len(accepted), time.Since(start))
+	s.persistLastDecisions(ctx, accepted)
+	if raw := strings.TrimSpace(rawJSON); raw != "" {
+		s.lastRawJSON = raw
+		return
+	}
+	if buf, err := json.Marshal(accepted); err == nil {
+		s.lastRawJSON = string(buf)
+	}
+}
+
+// Close 释放 LiveService 持有的资源。
+func (s *LiveService) Close() {
+	if s == nil {
+		return
+	}
+	if s.updater != nil {
+		s.updater.Close()
+	}
+	if s.decLogs != nil {
+		_ = s.decLogs.Close()
+	}
+}
+
+func (s *LiveService) tickDecision(ctx context.Context) error {
+	start := time.Now()
+	input, hasPositions := s.prepareDecisionInput(ctx)
+	logger.Infof("AI 决策循环开始 candidates=%d positions=%d", len(input.Candidates), len(input.Positions))
+	res, err := s.engine.Decide(ctx, input)
+	if err != nil {
+		return err
+	}
+	traceID := s.ensureTraceID(res.TraceID)
+	if len(res.Decisions) == 0 {
+		logger.Infof("AI 决策为空（观望） trace=%s 耗时=%s", traceID, time.Since(start))
+		return nil
+	}
+	s.logModelOutput(res)
+	s.notifyMetaSummary(res)
+	prepared := s.prepareDecisions(res.Decisions, hasPositions)
+	accepted := s.executeDecisions(ctx, prepared, traceID)
+	s.persistDecisionOutcome(ctx, accepted, res.RawJSON)
+	logger.Infof("AI 决策循环结束 trace=%s 原始=%d 接受=%d 耗时=%s", traceID, len(prepared), len(accepted), time.Since(start))
 	return nil
 }
 
 func (s *LiveService) applyTradingDefaults(d *decision.Decision) {
-	if s == nil || s.cfg == nil || d == nil {
+	if d == nil {
 		return
 	}
 	if d.Action != "open_long" && d.Action != "open_short" {
@@ -348,7 +395,7 @@ func (s *LiveService) applyTradingDefaults(d *decision.Decision) {
 }
 
 func (s *LiveService) enforceTierDistance(d *decision.Decision, price float64) {
-	if s == nil || s.cfg == nil || d == nil {
+	if d == nil {
 		return
 	}
 	if d.Action != "open_long" && d.Action != "open_short" {
@@ -527,16 +574,10 @@ func (s *LiveService) filterLastDecisionSnapshot(records []decision.DecisionMemo
 			}
 			continue
 		}
-		filtered := make([]decision.Decision, 0, len(mem.Decisions))
-		for _, d := range mem.Decisions {
-			filtered = append(filtered, d)
-		}
-		if len(filtered) == 0 {
-			continue
-		}
-		mem.Symbol = sym
-		mem.Decisions = filtered
-		out = append(out, mem)
+		dup := mem
+		dup.Symbol = sym
+		dup.Decisions = append([]decision.Decision(nil), mem.Decisions...)
+		out = append(out, dup)
 	}
 	return out
 }
@@ -825,44 +866,31 @@ func (s *LiveService) accountSnapshot() decision.AccountSnapshot {
 }
 
 func (s *LiveService) logDecision(d decision.Decision) {
+	base := fmt.Sprintf("AI 决策: %s %s", d.Symbol, d.Action)
+	parts := make([]string, 0, 6)
 	switch d.Action {
 	case "open_long", "open_short":
-		if d.Reasoning != "" {
-			logger.Infof("AI 决策: %s %s lev=%d size=%.0f sl=%.4f tp=%.4f conf=%d 理由=%s",
-				d.Symbol, d.Action, d.Leverage, d.PositionSizeUSD, d.StopLoss, d.TakeProfit, d.Confidence, d.Reasoning)
-		} else {
-			logger.Infof("AI 决策: %s %s lev=%d size=%.0f sl=%.4f tp=%.4f conf=%d",
-				d.Symbol, d.Action, d.Leverage, d.PositionSizeUSD, d.StopLoss, d.TakeProfit, d.Confidence)
-		}
+		parts = append(parts,
+			fmt.Sprintf("lev=%d", d.Leverage),
+			fmt.Sprintf("size=%.0f", d.PositionSizeUSD),
+			fmt.Sprintf("sl=%.4f", d.StopLoss),
+			fmt.Sprintf("tp=%.4f", d.TakeProfit),
+		)
 	case "close_long", "close_short":
-		if d.Reasoning != "" {
-			if d.Confidence > 0 {
-				logger.Infof("AI 决策: %s %s conf=%d 理由=%s", d.Symbol, d.Action, d.Confidence, d.Reasoning)
-			} else {
-				logger.Infof("AI 决策: %s %s 理由=%s", d.Symbol, d.Action, d.Reasoning)
-			}
-		} else {
-			if d.Confidence > 0 {
-				logger.Infof("AI 决策: %s %s conf=%d", d.Symbol, d.Action, d.Confidence)
-			} else {
-				logger.Infof("AI 决策: %s %s", d.Symbol, d.Action)
-			}
-		}
-	default:
-		if d.Reasoning != "" {
-			if d.Confidence > 0 {
-				logger.Infof("AI 决策: %s %s conf=%d 理由=%s", d.Symbol, d.Action, d.Confidence, d.Reasoning)
-			} else {
-				logger.Infof("AI 决策: %s %s 理由=%s", d.Symbol, d.Action, d.Reasoning)
-			}
-		} else {
-			if d.Confidence > 0 {
-				logger.Infof("AI 决策: %s %s conf=%d", d.Symbol, d.Action, d.Confidence)
-			} else {
-				logger.Infof("AI 决策: %s %s", d.Symbol, d.Action)
-			}
+		if d.CloseRatio > 0 {
+			parts = append(parts, fmt.Sprintf("close_ratio=%.2f", d.CloseRatio))
 		}
 	}
+	if d.Confidence > 0 {
+		parts = append(parts, fmt.Sprintf("conf=%d", d.Confidence))
+	}
+	if reason := strings.TrimSpace(d.Reasoning); reason != "" {
+		parts = append(parts, "理由="+reason)
+	}
+	if len(parts) > 0 {
+		base += " " + strings.Join(parts, " ")
+	}
+	logger.Infof("%s", base)
 }
 
 func (s *LiveService) sendMetaSummaryTelegram(summary string) error {
@@ -882,19 +910,23 @@ func (s *LiveService) sendMetaSummaryTelegram(summary string) error {
 		}
 	}
 
-	const maxLen = 3900
-	prefix := header
-	chunk := prefix + "```\n"
-	clen := len(chunk)
+	headerSent := false
+	newChunk := func() (string, int) {
+		ch := "```\n"
+		if !headerSent {
+			ch = header + ch
+			headerSent = true
+		}
+		return ch, len(ch)
+	}
+	chunk, clen := newChunk()
 	for i, ln := range lines {
 		if clen+len(ln)+1+3 > 4096 {
 			chunk += "```"
 			if err := s.tg.SendText(chunk); err != nil {
 				return err
 			}
-			prefix = ""
-			chunk = "```\n"
-			clen = len(chunk)
+			chunk, clen = newChunk()
 		}
 		chunk += ln + "\n"
 		clen += len(ln) + 1

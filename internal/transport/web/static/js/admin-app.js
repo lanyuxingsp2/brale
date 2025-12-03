@@ -164,6 +164,11 @@
     return '—';
   };
 
+  const decodeMultiline = (text) => {
+    if (!text) return '';
+    return text.replace(/\\n/g, '\n');
+  };
+
   const providerCount = (trace) => {
     if (!trace || !trace.steps) return 0;
     const set = new Set();
@@ -184,7 +189,7 @@
       trace,
       action,
       actionLabel: formatAction(action),
-      summary: pickReason(log, trace),
+      summary: decodeMultiline(pickReason(log, trace)),
       providerCount: providerCount(trace),
       stepCount: trace?.steps?.length || 0,
       hasError: !!(log?.error || (trace?.steps || []).some((s) => s.error)),
@@ -229,6 +234,9 @@
         symbols: init.selectedSymbols || [],
         loading: false,
         error: '',
+        providers: [],
+        providersLoading: false,
+        providersError: '',
       });
       const positions = reactive({
         items: [],
@@ -363,22 +371,6 @@
         }
       };
 
-      const switchView = (next) => {
-        view.value = next;
-        if (next === 'desk') loadDesk();
-        if (next === 'decisions') loadDecisions();
-        if (next === 'positions') loadPositions();
-        if (next === 'manualOpen') {
-          ensureManualSymbol();
-          if (manualOpen.symbol) loadManualPrice();
-        }
-        if (next === 'decisionDetail' && decisionDetail.id) loadDecisionDetail(decisionDetail.id);
-        if (next === 'positionDetail' && positionDetail.tradeId) loadPositionDetail(positionDetail.tradeId);
-        if (next === 'logs') loadLogs();
-      };
-
-      const refreshCurrent = () => switchView(view.value);
-
       const loadDesk = async () => {
         desk.loading = true;
         desk.error = '';
@@ -407,6 +399,14 @@
         return params.toString();
       };
 
+      const buildProviderParams = () => {
+        const params = new URLSearchParams();
+        params.set('limit', '9');
+        params.set('stage', 'provider');
+        decisions.symbols.forEach((s) => params.append('symbol', s));
+        return params.toString();
+      };
+
       const loadDecisions = async (force = false) => {
         if (!force && decisions.items.length && view.value !== 'decisions') return;
         decisions.loading = true;
@@ -424,6 +424,61 @@
         }
       };
 
+      const normalizeProviderOutput = (log) => {
+        const ts = log.ts || log.timestamp;
+        const provider = (log.provider_id || '').trim() || 'provider';
+        const dec = (log.decisions && log.decisions[0]) || {};
+        const action = dec.action || 'hold';
+        const symbols = (log.symbols && log.symbols.length ? log.symbols : dec.symbol ? [dec.symbol] : []) || [];
+        let summary = decodeMultiline(dec.reasoning || log.meta || log.raw_output || '').trim();
+        if (!summary) summary = '（无输出）';
+        const symbolLabel = symbols.length ? symbols.join(' / ') : '多标的';
+        return {
+          id: log.id,
+          ts,
+          provider,
+          action,
+          actionLabel: formatAction(action),
+          symbols,
+          symbolLabel,
+          summary,
+        };
+      };
+
+      const loadProviderOutputs = async (force = false) => {
+        if (!force && decisions.providers.length && view.value !== 'decisions') return;
+        decisions.providersLoading = true;
+        decisions.providersError = '';
+        try {
+          const res = await fetchJSON(`/api/live/decisions?${buildProviderParams()}`);
+          decisions.providers = (res.logs || []).map((log) => normalizeProviderOutput(log));
+        } catch (e) {
+          decisions.providersError = e.message;
+          showToast(e.message, 'error');
+        } finally {
+          decisions.providersLoading = false;
+        }
+      };
+
+      const switchView = (next) => {
+        view.value = next;
+        if (next === 'desk') loadDesk();
+        if (next === 'decisions') {
+          loadDecisions();
+          loadProviderOutputs();
+        }
+        if (next === 'positions') loadPositions();
+        if (next === 'manualOpen') {
+          ensureManualSymbol();
+          if (manualOpen.symbol) loadManualPrice();
+        }
+        if (next === 'decisionDetail' && decisionDetail.id) loadDecisionDetail(decisionDetail.id);
+        if (next === 'positionDetail' && positionDetail.tradeId) loadPositionDetail(positionDetail.tradeId);
+        if (next === 'logs') loadLogs();
+      };
+
+      const refreshCurrent = () => switchView(view.value);
+
       const changeDecisionPage = (delta) => {
         const next = decisions.page + delta;
         if (next < 1 || next > decisionTotalPages.value) return;
@@ -440,12 +495,14 @@
         }
         decisions.page = 1;
         loadDecisions(true);
+        loadProviderOutputs(true);
       };
 
       const clearSymbols = () => {
         decisions.symbols = [];
         decisions.page = 1;
         loadDecisions(true);
+        loadProviderOutputs(true);
       };
 
       const openDecision = (id) => {

@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	textutil "brale/internal/pkg/text"
 )
 
 // MetaAggregator：逐币种多数决（留权重，默认相等）。
@@ -281,7 +283,7 @@ func buildActionSummary(votes map[string]map[string]float64, details map[string]
 				if reason == "" {
 					reason = "-"
 				}
-				b.WriteString(fmt.Sprintf("  - %s[%.2f]: %s\n", c.ID, c.Weight, TrimTo(reason, 480)))
+				b.WriteString(fmt.Sprintf("  - %s[%.2f]: %s\n", c.ID, c.Weight, textutil.Truncate(reason, 480)))
 			}
 		}
 	}

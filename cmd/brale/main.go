@@ -75,6 +75,7 @@ func setupLogOutput(path string) (*os.File, error) {
 	}
 	mw := io.MultiWriter(os.Stdout, file)
 	log.SetOutput(mw)
+	logger.SetOutput(mw)
 	return file, nil
 }
 

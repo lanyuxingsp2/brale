@@ -140,11 +140,6 @@ type PositionListResult struct {
 	Positions  []APIPosition `json:"positions"`
 }
 
-type pendingHit struct {
-	target float64
-	seenAt int64
-}
-
 func formatQty(val float64) string {
 	if val == 0 {
 		return "-"
@@ -157,10 +152,6 @@ func formatPrice(val float64) string {
 		return "-"
 	}
 	return fmt.Sprintf("%.4f", val)
-}
-
-func formatPercent(val float64) string {
-	return fmt.Sprintf("%.0f%%", val*100)
 }
 
 func shortReason(desc string) string {

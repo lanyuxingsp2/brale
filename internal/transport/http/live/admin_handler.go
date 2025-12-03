@@ -6,12 +6,10 @@ import (
 	"html/template"
 	"math"
 	"net/http"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
 
-	"brale/internal/executor/freqtrade"
 	"brale/internal/gateway/database"
 	"brale/internal/logger"
 
@@ -203,17 +201,6 @@ type adminHandler struct {
 	defaultSymbols []string
 }
 
-type positionAuditEntry struct {
-	Timestamp int64
-	Kind      string
-	Title     string
-	Detail    string
-	Field     database.TierField
-	OldValue  string
-	NewValue  string
-	Operation database.OperationType
-}
-
 // renderApp 输出统一的 Vue 容器模板，前端自行通过 API 获取数据。
 func (h *adminHandler) renderApp(c *gin.Context, view string, extras gin.H) {
 	payload := gin.H{
@@ -292,55 +279,4 @@ func (h *adminHandler) renderPositionDetail(c *gin.Context) {
 	h.renderApp(c, "positionDetail", gin.H{
 		"TradeID": tradeID,
 	})
-}
-
-func buildPositionAuditEntries(pos freqtrade.APIPosition) []positionAuditEntry {
-	entries := make([]positionAuditEntry, 0, len(pos.TierLogs)+len(pos.Events)+2)
-	if pos.OpenedAt > 0 {
-		entries = append(entries, positionAuditEntry{
-			Timestamp: pos.OpenedAt,
-			Kind:      "open",
-			Title:     "开仓",
-			Detail:    fmt.Sprintf("Entry %.4f · Size %.4f", pos.EntryPrice, pos.Amount),
-		})
-	}
-	for _, log := range pos.TierLogs {
-		entries = append(entries, positionAuditEntry{
-			Timestamp: log.Timestamp.UnixMilli(),
-			Kind:      "tier",
-			Field:     log.Field,
-			OldValue:  log.OldValue,
-			NewValue:  log.NewValue,
-			Detail:    strings.TrimSpace(log.Reason),
-		})
-	}
-	for _, ev := range pos.Events {
-		reason := ""
-		if ev.Details != nil {
-			if val, ok := ev.Details["reason"].(string); ok {
-				reason = val
-			}
-		}
-		entries = append(entries, positionAuditEntry{
-			Timestamp: ev.Timestamp.UnixMilli(),
-			Kind:      "event",
-			Operation: ev.Operation,
-			Detail:    strings.TrimSpace(reason),
-		})
-	}
-	if pos.Status == "closed" && pos.ClosedAt > 0 {
-		entries = append(entries, positionAuditEntry{
-			Timestamp: pos.ClosedAt,
-			Kind:      "close",
-			Title:     "平仓",
-			Detail:    fmt.Sprintf("Exit %.4f (%s)", pos.ExitPrice, pos.ExitReason),
-		})
-	}
-	sort.Slice(entries, func(i, j int) bool {
-		if entries[i].Timestamp == entries[j].Timestamp {
-			return entries[i].Kind < entries[j].Kind
-		}
-		return entries[i].Timestamp > entries[j].Timestamp
-	})
-	return entries
 }

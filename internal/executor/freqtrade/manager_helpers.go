@@ -17,15 +17,6 @@ import (
 	"brale/internal/market"
 )
 
-type tradeNotFoundError struct {
-	Symbol string
-	Side   string
-}
-
-func (e tradeNotFoundError) Error() string {
-	return "freqtrade trade not found for " + strings.ToUpper(e.Symbol) + " " + strings.ToLower(e.Side)
-}
-
 // notify 将消息发送到 TextNotifier（若存在）。
 func (m *Manager) notify(title string, lines ...string) {
 	if m == nil || m.notifier == nil {
@@ -460,29 +451,6 @@ func (m *Manager) cachePositions() []database.LiveOrderWithTiers {
 	}
 	m.posCacheMu.RUnlock()
 	return out
-}
-
-// upsertCache updates in-memory cache for a trade.
-func (m *Manager) upsertCache(p database.LiveOrderWithTiers) {
-	if m == nil {
-		return
-	}
-	m.posCacheMu.Lock()
-	if m.posCache == nil {
-		m.posCache = make(map[int]database.LiveOrderWithTiers)
-	}
-	m.posCache[p.Order.FreqtradeID] = p
-	m.posCacheMu.Unlock()
-}
-
-// deleteCache removes a trade from cache.
-func (m *Manager) deleteCache(tradeID int) {
-	if m == nil {
-		return
-	}
-	m.posCacheMu.Lock()
-	delete(m.posCache, tradeID)
-	m.posCacheMu.Unlock()
 }
 
 // refreshCache loads active positions into cache (fallback when cache empty).

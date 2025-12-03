@@ -163,9 +163,7 @@ func BuildAnalysisContexts(input AnalysisBuildInput) []AnalysisContext {
 		if len(symContexts) == 0 {
 			continue
 		}
-		for i := range symContexts {
-			result = append(result, symContexts[i])
-		}
+		result = append(result, symContexts...)
 	}
 	return result
 }

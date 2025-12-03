@@ -131,9 +131,37 @@
                             </div>
                             <div class="muted">共 [[ decisions.total ]] 条</div>
                         </div>
-                        <div class="filter-tags">
-                            <button class="tag" :class="{active: !decisions.symbols.length}" @click="clearSymbols">All</button>
-                            <button class="tag" v-for="sym in defaultSymbols" :key="sym" :class="{active: decisions.symbols.includes(sym)}" @click="toggleSymbol(sym)">[[ sym ]]</button>
+                    <div class="filter-tags">
+                        <button class="tag" :class="{active: !decisions.symbols.length}" @click="clearSymbols">All</button>
+                        <button class="tag" v-for="sym in defaultSymbols" :key="sym" :class="{active: decisions.symbols.includes(sym)}" @click="toggleSymbol(sym)">[[ sym ]]</button>
+                    </div>
+                </div>
+
+                    <div class="notion-block">
+                        <div class="block-header">
+                            <div>
+                                <p class="notion-section-title">模型输出</p>
+                                <h2>最新 Provider 响应</h2>
+                                <p class="muted">来自 stage=provider 的最近若干条记录</p>
+                            </div>
+                        </div>
+                        <div v-if="decisions.providersLoading" class="block-skeleton">加载 Provider 输出...</div>
+                        <div v-else>
+                            <div v-if="decisions.providersError" class="callout error">[[ decisions.providersError ]]</div>
+                            <div class="provider-grid" v-if="decisions.providers.length">
+                                <div class="provider-card" v-for="item in decisions.providers" :key="item.id">
+                                    <div class="provider-card-header">
+                                        <div>
+                                            <p class="provider-name">[[ item.provider ]]</p>
+                                            <p class="provider-time muted">[[ formatTime(item.ts) ]] · [[ formatDate(item.ts) ]]</p>
+                                        </div>
+                                        <span class="badge" :class="badgeClass(item.action)">[[ item.actionLabel ]]</span>
+                                    </div>
+                                    <div class="provider-symbols">[[ item.symbolLabel ]]</div>
+                                    <p class="provider-summary">[[ item.summary ]]</p>
+                                </div>
+                            </div>
+                            <p v-else class="muted italic">暂无 Provider 输出。</p>
                         </div>
                     </div>
 

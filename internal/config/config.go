@@ -597,9 +597,6 @@ func (h HorizonIndicators) LookbackBars() int {
 	if max < 26 {
 		max = 26
 	}
-	if max <= 0 {
-		max = 50
-	}
 	return max
 }
 
@@ -963,27 +960,6 @@ func normalizePreferenceList(pref []string) []string {
 		return nil
 	}
 	return out
-}
-
-func setDefaultBool(target *bool, def bool, path string, set map[string]bool) {
-	if target == nil {
-		return
-	}
-	if isKeySet(set, path) {
-		return
-	}
-	*target = def
-}
-
-func isKeySet(set map[string]bool, path string) bool {
-	if len(set) == 0 {
-		return false
-	}
-	path = strings.ToLower(strings.TrimSpace(path))
-	if path == "" {
-		return false
-	}
-	return set[path]
 }
 
 func collectConfigKeys(data []byte, dest keySet) error {

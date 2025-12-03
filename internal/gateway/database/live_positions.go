@@ -567,13 +567,6 @@ func nullIfEmptyString(v string) interface{} {
 	return v
 }
 
-func nullIfZeroFloat(v float64) interface{} {
-	if v == 0 {
-		return nil
-	}
-	return v
-}
-
 func timeToMillisPtr(t *time.Time) interface{} {
 	if t == nil || t.IsZero() {
 		return nil
