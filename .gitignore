@@ -6,6 +6,7 @@ bin/
 
 # Local config (keep secrets out of VCS)
 configs/config.toml
+configs/user_data/freqtrade-config.json # Freqtrade specific user config
 
 # Tests (exclude from GitHub per request)
 *_test.go
@@ -17,9 +18,5 @@ AGENTS.md
 data/
 .gocache/
 .gomodcache/
-
-freqtrade-config.json
-
-config.toml
 
 base.toml

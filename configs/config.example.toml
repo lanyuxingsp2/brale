@@ -41,40 +41,11 @@ id = "deepseek"                          # ai.models[].id：模型唯一 ID
 provider = "deepseek"                    # ai.models[].provider：使用的 provider 名称
 enabled = true                           # ai.models[].enabled：是否启用
 api_url = "https://api.qnaigc.com/v1"    # ai.models[].api_url：模型 API 地址
-api_key = "sk-0d29772c10ae9b002c72d07137f634b0a69b943ef5f1fe2a91f2cd660c09a4c2" # ai.models[].api_key：调用凭证
+api_key = "sk-" # ai.models[].api_key：调用凭证
 model = "deepseek-r1"                    # ai.models[].model：模型标识
 supports_vision = false                  # ai.models[].supports_vision：是否支持图像
 expect_json = false                      # ai.models[].expect_json：是否期望 JSON 输出
 
-[[ai.models]]
-id = "qwen"                              # ai.models[].id：模型唯一 ID
-provider = "qwen"                        # ai.models[].provider：使用的 provider 名称
-enabled = true                           # ai.models[].enabled：是否启用
-api_url = "https://api.qnaigc.com/v1"    # ai.models[].api_url：模型 API 地址
-api_key = "sk-1d64fdeab304509ccea0b75215fa2c0bc5c508439f2ea345106f44202c027494" # ai.models[].api_key：调用凭证
-model = "qwen3-30b-a3b"                  # ai.models[].model：模型标识
-supports_vision = false                  # ai.models[].supports_vision：是否支持图像
-expect_json = false                      # ai.models[].expect_json：是否期望 JSON 输出
-
-[[ai.models]]
-id = "vanchin"                           # ai.models[].id：模型唯一 ID
-provider = "vanchin"                     # ai.models[].provider：使用的 provider 名称
-enabled = true                           # ai.models[].enabled：是否启用
-api_url = "https://vanchin.streamlake.ai/api/gateway/v1/endpoints" # ai.models[].api_url：模型 API 地址
-api_key = "lbxRL5DoFsKnkyya4PZzYNwjSSq1DZ5tiLWb4pvTUXw" # ai.models[].api_key：调用凭证
-model = "ep-z5gybo-1762362617887467865"  # ai.models[].model：模型标识
-supports_vision = false                  # ai.models[].supports_vision：是否支持图像
-expect_json = false                      # ai.models[].expect_json：是否期望 JSON 输出
-
-[[ai.models]]
-id = "doubao"                            # ai.models[].id：模型唯一 ID
-provider = "doubao"                      # ai.models[].provider：使用的 provider 名称
-enabled = false                          # ai.models[].enabled：是否启用
-api_url = "https://api.qnaigc.com/v1"    # ai.models[].api_url：模型 API 地址
-api_key = "sk-0bc74286d28bf38ef586bff49a85dfdec8c7353b0b2f56f7f1cf77bee2a171e4" # ai.models[].api_key：调用凭证
-model = "doubao-seed-1.6-thinking"       # ai.models[].model：模型标识
-supports_vision = false                  # ai.models[].supports_vision：是否支持图像
-expect_json = false                      # ai.models[].expect_json：是否期望 JSON 输出
 
 [prompt]
 dir = "prompts"                          # prompt.dir：提示词模板目录
@@ -82,12 +53,12 @@ system_template = "default"              # prompt.system_template：默认系统
 
 [notify.telegram]
 enabled = true                           # notify.telegram.enabled：是否启用 Telegram 通知
-bot_token = "7979485253:AAGtmW6v8eumkHMoQ3JClVo9iatwEa1rJpw" # notify.telegram.bot_token：机器人 Token
-chat_id = "-1003001441406"               # notify.telegram.chat_id：接收频道/用户 ID
+bot_token = "" # notify.telegram.bot_token：机器人 Token
+chat_id = ""               # notify.telegram.chat_id：接收频道/用户 ID
 
 [freqtrade]
-username = "lauk"                        # freqtrade.username：Freqtrade Basic Auth 用户
-password = "881016"                      # freqtrade.password：Freqtrade Basic Auth 密码
+username = ""                        # freqtrade.username：Freqtrade Basic Auth 用户
+password = ""                      # freqtrade.password：Freqtrade Basic Auth 密码
 min_stop_distance_pct = 0.005            # freqtrade.min_stop_distance_pct：最小止损距离
 entry_slip_pct = 0.0002                  # freqtrade.entry_slip_pct：限价滑点容忍
 
