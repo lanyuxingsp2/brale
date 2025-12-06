@@ -367,14 +367,15 @@ type ModelPreset struct {
 
 // AIModelConfig 代表一个最终参与投票的模型条目。
 type AIModelConfig struct {
-	ID       string            `toml:"id"`
-	Provider string            `toml:"provider"`
-	Preset   string            `toml:"preset"`
-	Enabled  bool              `toml:"enabled"`
-	APIURL   string            `toml:"api_url"`
-	APIKey   string            `toml:"api_key"`
-	Model    string            `toml:"model"`
-	Headers  map[string]string `toml:"headers"`
+	ID            string            `toml:"id"`
+	Provider      string            `toml:"provider"`
+	Preset        string            `toml:"preset"`
+	Enabled       bool              `toml:"enabled"`
+	FinalDisabled bool              `toml:"final_disabled"`
+	APIURL        string            `toml:"api_url"`
+	APIKey        string            `toml:"api_key"`
+	Model         string            `toml:"model"`
+	Headers       map[string]string `toml:"headers"`
 	// SupportsVision/ExpectJSON 使用指针以区分“显式 false”与“沿用预设值”。
 	SupportsVision *bool `toml:"supports_vision"`
 	ExpectJSON     *bool `toml:"expect_json"`
@@ -385,6 +386,7 @@ type ResolvedModelConfig struct {
 	ID             string
 	Provider       string
 	Enabled        bool
+	FinalDisabled  bool
 	APIURL         string
 	APIKey         string
 	Model          string
@@ -583,6 +585,7 @@ func (a AIConfig) ResolveModelConfigs() ([]ResolvedModelConfig, error) {
 			ID:             strings.TrimSpace(raw.ID),
 			Provider:       strings.TrimSpace(raw.Provider),
 			Enabled:        raw.Enabled,
+			FinalDisabled:  raw.FinalDisabled,
 			APIURL:         apiURL,
 			APIKey:         apiKey,
 			Model:          strings.TrimSpace(raw.Model),

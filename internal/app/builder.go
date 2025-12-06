@@ -24,7 +24,7 @@ type AppBuilder struct {
 	symbolProviderFn    func(brcfg.SymbolsConfig) coins.SymbolProvider
 	promptManagerFn     func(string) (*strategy.Manager, error)
 	marketStackFn       func(context.Context, *brcfg.Config, []string, brcfg.HorizonProfile, []string) (*marketStack, error)
-	modelProvidersFn    func(context.Context, brcfg.AIConfig, int) ([]provider.ModelProvider, bool, error)
+	modelProvidersFn    func(context.Context, brcfg.AIConfig, int) ([]provider.ModelProvider, map[string]bool, bool, error)
 	decisionArtifactsFn func(context.Context, brcfg.AIConfig, *decision.LegacyEngineAdapter) (*decisionArtifacts, error)
 	freqManagerFn       func(brcfg.FreqtradeConfig, string, *database.DecisionLogStore, market.Recorder, freqexec.TextNotifier) (*freqexec.Manager, error)
 	liveHTTPFn          func(brcfg.AppConfig, *database.DecisionLogStore, livehttp.FreqtradeWebhookHandler, []string) (*livehttp.Server, error)
@@ -110,7 +110,7 @@ func (b *AppBuilder) Build(ctx context.Context) (*App, error) {
 	warmupSummary := marketStack.warmupSummary
 	metricsSvc := marketStack.metrics
 
-	providers, visionReady, err := b.modelProvidersFn(ctx, cfg.AI, cfg.MCP.TimeoutSeconds)
+	providers, finalDisabled, visionReady, err := b.modelProvidersFn(ctx, cfg.AI, cfg.MCP.TimeoutSeconds)
 	if err != nil {
 		return nil, err
 	}
@@ -126,6 +126,7 @@ func (b *AppBuilder) Build(ctx context.Context) (*App, error) {
 		HorizonName:        cfg.AI.ActiveHorizon,
 		MultiAgent:         cfg.AI.MultiAgent,
 		ProviderPreference: cfg.AI.ProviderPreference,
+		FinalDisabled:      finalDisabled,
 		LogEachModel:       cfg.AI.LogEachModel,
 		Metrics:            metricsSvc,
 		TimeoutSeconds:     cfg.MCP.TimeoutSeconds,
@@ -215,7 +216,7 @@ func WithMarketStack(fn func(context.Context, *brcfg.Config, []string, brcfg.Hor
 }
 
 // WithModelProviders overrides the model provider builder.
-func WithModelProviders(fn func(context.Context, brcfg.AIConfig, int) ([]provider.ModelProvider, bool, error)) AppBuilderOption {
+func WithModelProviders(fn func(context.Context, brcfg.AIConfig, int) ([]provider.ModelProvider, map[string]bool, bool, error)) AppBuilderOption {
 	return func(b *AppBuilder) {
 		if fn != nil {
 			b.modelProvidersFn = fn

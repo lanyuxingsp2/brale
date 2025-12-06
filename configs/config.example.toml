@@ -40,6 +40,7 @@ trend_provider = "vanchin"               # ai.multi_agent.trend_provider：趋�
 id = "deepseek"                          # ai.models[].id：模型唯一 ID
 provider = "deepseek"                    # ai.models[].provider：使用的 provider 名称
 enabled = true                           # ai.models[].enabled：是否启用
+final_disabled = false                   # 仅供 Agent 阶段使用，不参与最终 Provider 聚合
 api_url = "https://api.qnaigc.com/v1"    # ai.models[].api_url：模型 API 地址
 api_key = "sk-" # ai.models[].api_key：调用凭证
 model = "deepseek-r1"                    # ai.models[].model：模型标识

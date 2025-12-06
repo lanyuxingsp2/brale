@@ -50,6 +50,7 @@ type LegacyEngineAdapter struct {
 	MultiAgent  brcfg.MultiAgentConfig
 	// ProviderPreference 控制同权重/同动作时的模型优先级，按配置顺序匹配。
 	ProviderPreference []string
+	FinalDisabled      map[string]bool
 
 	Name_ string
 
@@ -524,6 +525,9 @@ func (e *LegacyEngineAdapter) collectModelOutputs(ctx context.Context, call func
 		outs := make([]ModelOutput, 0, len(e.Providers))
 		for _, p := range e.Providers {
 			if p != nil && p.Enabled() {
+				if e.isFinalStageDisabled(p.ID()) {
+					continue
+				}
 				outs = append(outs, call(ctx, p))
 			}
 		}
@@ -543,6 +547,9 @@ func (e *LegacyEngineAdapter) collectModelOutputs(ctx context.Context, call func
 	eg, egCtx := errgroup.WithContext(ctx)
 	for _, p := range e.Providers {
 		if p == nil || !p.Enabled() {
+			continue
+		}
+		if e.isFinalStageDisabled(p.ID()) {
 			continue
 		}
 		provider := p
@@ -619,6 +626,17 @@ func cloneStrings(src []string) []string {
 	dst := make([]string, len(src))
 	copy(dst, src)
 	return dst
+}
+
+func (e *LegacyEngineAdapter) isFinalStageDisabled(id string) bool {
+	if len(e.FinalDisabled) == 0 {
+		return false
+	}
+	if strings.TrimSpace(id) == "" {
+		return false
+	}
+	_, ok := e.FinalDisabled[strings.TrimSpace(id)]
+	return ok
 }
 
 func describeAgentPurpose(stage string) string {

@@ -148,6 +148,7 @@ type engineConfig struct {
 	HorizonName        string
 	MultiAgent         brcfg.MultiAgentConfig
 	ProviderPreference []string
+	FinalDisabled      map[string]bool
 	LogEachModel       bool
 	Metrics            *market.MetricsService
 	TimeoutSeconds     int
@@ -254,14 +255,29 @@ func buildAggregator(cfg brcfg.AIConfig) decision.Aggregator {
 	return decision.FirstWinsAggregator{}
 }
 
-func buildModelProviders(ctx context.Context, cfg brcfg.AIConfig, timeoutSeconds int) ([]provider.ModelProvider, bool, error) {
+func buildModelProviders(ctx context.Context, cfg brcfg.AIConfig, timeoutSeconds int) ([]provider.ModelProvider, map[string]bool, bool, error) {
 	var (
 		modelCfgs   []provider.ModelCfg
 		visionReady bool
 	)
+	finalDisabled := make(map[string]bool)
 	for _, m := range cfg.MustResolveModelConfigs() {
+		id := strings.TrimSpace(m.ID)
+		if id == "" {
+			base := strings.TrimSpace(m.Provider)
+			if base == "" {
+				base = "provider"
+			}
+			model := strings.TrimSpace(m.Model)
+			if model != "" {
+				id = fmt.Sprintf("%s:%s", base, model)
+			} else {
+				id = base
+			}
+			logger.Warnf("未配置 ai.models.id，已为 %q 生成 ID: %s", m.Provider, id)
+		}
 		modelCfgs = append(modelCfgs, provider.ModelCfg{
-			ID:             m.ID,
+			ID:             id,
 			Provider:       m.Provider,
 			Enabled:        m.Enabled,
 			APIURL:         m.APIURL,
@@ -274,10 +290,13 @@ func buildModelProviders(ctx context.Context, cfg brcfg.AIConfig, timeoutSeconds
 		if m.Enabled && m.SupportsVision {
 			visionReady = true
 		}
+		if m.FinalDisabled {
+			finalDisabled[id] = true
+		}
 	}
 	if visionReady {
 		if err := visual.EnsureHeadlessAvailable(ctx); err != nil {
-			return nil, false, fmt.Errorf("初始化可视化渲染失败(请安装 headless Chrome): %w", err)
+			return nil, nil, false, fmt.Errorf("初始化可视化渲染失败(请安装 headless Chrome): %w", err)
 		}
 	} else {
 		logger.Infof("所有启用模型均不支持图像，跳过可视化渲染初始化")
@@ -295,13 +314,22 @@ func buildModelProviders(ctx context.Context, cfg brcfg.AIConfig, timeoutSeconds
 		}
 		logger.Infof("✓ 已启用 %d 个 AI 模型: %v", len(ids), ids)
 	}
-	return providers, visionReady, nil
+	return providers, finalDisabled, visionReady, nil
 }
 
 func buildDecisionEngine(cfg engineConfig) *decision.LegacyEngineAdapter {
 	agg := cfg.Aggregator
 	if agg == nil {
 		agg = decision.FirstWinsAggregator{}
+	}
+	var finalDisabled map[string]bool
+	if len(cfg.FinalDisabled) > 0 {
+		finalDisabled = make(map[string]bool, len(cfg.FinalDisabled))
+		for k, v := range cfg.FinalDisabled {
+			if v {
+				finalDisabled[k] = true
+			}
+		}
 	}
 	return &decision.LegacyEngineAdapter{
 		Providers:             cfg.Providers,
@@ -314,6 +342,7 @@ func buildDecisionEngine(cfg engineConfig) *decision.LegacyEngineAdapter {
 		HorizonName:           cfg.HorizonName,
 		MultiAgent:            cfg.MultiAgent,
 		ProviderPreference:    append([]string(nil), cfg.ProviderPreference...),
+		FinalDisabled:         finalDisabled,
 		Parallel:              true,
 		LogEachModel:          cfg.LogEachModel,
 		DebugStructuredBlocks: cfg.LogEachModel,
