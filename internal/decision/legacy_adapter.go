@@ -944,6 +944,7 @@ type klineWindow struct {
 	Interval string
 	Horizon  string
 	Trend    string
+	CSV      string
 	Bars     []market.Candle
 }
 
@@ -954,12 +955,13 @@ func (e *LegacyEngineAdapter) renderKlineWindows(ctxs []AnalysisContext) string 
 	rank := buildIntervalRank(e.Intervals)
 	windows := make([]klineWindow, 0, len(ctxs))
 	for _, ac := range ctxs {
+		csvData := strings.TrimSpace(ac.KlineCSV)
 		bars, err := parseRecentCandles(ac.KlineJSON, priceWindowBars)
 		if err != nil {
 			logger.Debugf("kline snapshot 解析失败 %s %s: %v", ac.Symbol, ac.Interval, err)
 			continue
 		}
-		if len(bars) == 0 {
+		if len(bars) == 0 && csvData == "" {
 			continue
 		}
 		win := klineWindow{
@@ -967,6 +969,7 @@ func (e *LegacyEngineAdapter) renderKlineWindows(ctxs []AnalysisContext) string 
 			Interval: strings.TrimSpace(ac.Interval),
 			Horizon:  strings.TrimSpace(ac.ForecastHorizon),
 			Trend:    ac.TrendReport,
+			CSV:      csvData,
 			Bars:     bars,
 		}
 		if win.Symbol == "" || win.Interval == "" {
@@ -990,23 +993,28 @@ func (e *LegacyEngineAdapter) renderKlineWindows(ctxs []AnalysisContext) string 
 	})
 	var b strings.Builder
 	b.WriteString("\n## Price Windows（最近 6 根，最新在前）\n")
+	b.WriteString("字段包含 Date/Time(UTC), O/H/L/C, Volume, Trades；数据以 CSV 块形式呈现。\n")
 	for _, win := range windows {
 		header := fmt.Sprintf("- %s %s", win.Symbol, win.Interval)
 		if win.Horizon != "" {
 			header += fmt.Sprintf(" (%s)", win.Horizon)
 		}
 		b.WriteString(header + "\n")
-		b.WriteString("  Bars:\n")
-		for idx := len(win.Bars) - 1; idx >= 0; idx-- {
-			bar := win.Bars[idx]
-			b.WriteString(fmt.Sprintf("    [%s, o=%s, h=%s, l=%s, c=%s, v=%.2f]\n",
-				bar.TimeString(),
-				formatutil.Float(bar.Open, 4),
-				formatutil.Float(bar.High, 4),
-				formatutil.Float(bar.Low, 4),
-				formatutil.Float(bar.Close, 4),
-				bar.Volume,
-			))
+		if win.CSV != "" {
+			writeCSVDataBlock(&b, buildKlineBlockTag(win.Interval), win.CSV)
+		} else {
+			b.WriteString("  Bars:\n")
+			for idx := len(win.Bars) - 1; idx >= 0; idx-- {
+				bar := win.Bars[idx]
+				b.WriteString(fmt.Sprintf("    [%s, o=%s, h=%s, l=%s, c=%s, v=%.2f]\n",
+					bar.TimeString(),
+					formatutil.Float(bar.Open, 4),
+					formatutil.Float(bar.High, 4),
+					formatutil.Float(bar.Low, 4),
+					formatutil.Float(bar.Close, 4),
+					bar.Volume,
+				))
+			}
 		}
 		if summary := market.Candles(win.Bars).Snapshot(win.Interval, win.Trend); summary != "" {
 			b.WriteString("  Snapshot: " + summary + "\n")

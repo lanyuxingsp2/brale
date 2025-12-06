@@ -283,8 +283,32 @@
                                         </div>
                                         <div class="step-label" v-if="showSystemPrompt && (step.system_prompt || '').trim()">System Prompt</div>
                                         <pre class="step-text" v-if="showSystemPrompt && (step.system_prompt || '').trim()">[[ step.system_prompt ]]</pre>
-                                        <div class="step-label" v-if="showUserPrompt">User Prompt</div>
-                                        <pre class="step-text" v-if="showUserPrompt">[[ step.user_prompt || '—' ]]</pre>
+                                        <template v-if="showUserPrompt">
+                                            <div class="step-label">User Prompt</div>
+                                            <pre class="step-text">[[ cleanUserPrompt(step.user_prompt) ]]</pre>
+                                            <template v-for="(block, blockIdx) in extractCsvBlocks(step.user_prompt)" :key="csvBlockKey(step, blockIdx, block.tag)">
+                                                <div class="csv-block">
+                                                    <button class="csv-toggle" type="button" @click="toggleCsvBlock(csvBlockKey(step, blockIdx, block.tag))">
+                                                        <span>[[ block.label ]] · [[ block.rows.length ]]行</span>
+                                                        <span>[[ isCsvExpanded(csvBlockKey(step, blockIdx, block.tag)) ? '收起' : '展开' ]]</span>
+                                                    </button>
+                                                    <div class="csv-table-wrapper" v-if="isCsvExpanded(csvBlockKey(step, blockIdx, block.tag))">
+                                                        <table class="csv-table">
+                                                            <thead>
+                                                                <tr>
+                                                                    <th v-for="(header, headerIdx) in block.headers" :key="headerIdx">[[ header ]]</th>
+                                                                </tr>
+                                                            </thead>
+                                                            <tbody>
+                                                                <tr v-for="(row, rowIdx) in block.rows" :key="rowIdx">
+                                                                    <td v-for="(cell, cellIdx) in row" :key="cellIdx">[[ cell ]]</td>
+                                                                </tr>
+                                                            </tbody>
+                                                        </table>
+                                                    </div>
+                                                </div>
+                                            </template>
+                                        </template>
                                         <template v-if="step.images && step.images.length">
                                             <div class="step-label">Image Attachments ([[ step.images.length ]])</div>
                                             <div class="step-images">

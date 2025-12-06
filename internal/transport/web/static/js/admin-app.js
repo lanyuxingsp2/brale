@@ -169,6 +169,40 @@
     return text.replace(/\\n/g, '\n');
   };
 
+  const csvBlockRegex = () => /\[([A-Z0-9_]+)_START\]([\s\S]*?)\[\1_END\]/gi;
+
+  const extractCsvBlocks = (text) => {
+    if (!text) return [];
+    const regex = csvBlockRegex();
+    const blocks = [];
+    let match;
+    while ((match = regex.exec(text)) !== null) {
+      const tag = match[1];
+      const payload = (match[2] || '').trim();
+      if (!payload) continue;
+      const lines = payload
+        .split(/\r?\n/)
+        .map((ln) => ln.trim())
+        .filter((ln) => ln.length);
+      if (!lines.length) continue;
+      const headers = lines[0].split(',').map((h) => h.trim());
+      const rows = lines.slice(1).map((line) => line.split(',').map((cell) => cell.trim()));
+      blocks.push({
+        tag,
+        label: tag.replace(/^DATA_?/, '') || tag,
+        headers,
+        rows,
+      });
+    }
+    return blocks;
+  };
+
+  const stripCsvBlocks = (text) => {
+    if (!text) return '';
+    const regex = csvBlockRegex();
+    return text.replace(regex, (_, tag) => `[${tag} 数据见下方表格]\n`);
+  };
+
   const providerCount = (trace) => {
     if (!trace || !trace.steps) return 0;
     const set = new Set();
@@ -226,6 +260,7 @@
       const navCollapsed = ref(isMobile.value);
       const showSystemPrompt = ref(true);
       const showUserPrompt = ref(true);
+      const csvCollapse = reactive({});
       const defaultSymbols = ref(init.defaultSymbols || []);
 
       const desk = reactive({ decisions: [], positions: [], loading: false, error: '' });
@@ -568,6 +603,17 @@
       const decisionHeadline = (log, trace) => formatAction(pickAction(log, trace));
       const decisionHeadlineAction = (log, trace) => pickAction(log, trace);
 
+      const cleanUserPrompt = (text) => {
+        const cleaned = stripCsvBlocks(text || '');
+        return cleaned.trim().length ? cleaned : '—';
+      };
+
+      const csvBlockKey = (step, idx, tag) => `${step.stage || 'stage'}-${step.ts || idx}-${tag || idx}`;
+      const isCsvExpanded = (key) => !!csvCollapse[key];
+      const toggleCsvBlock = (key) => {
+        csvCollapse[key] = !csvCollapse[key];
+      };
+
       const loadDecisionDetail = async (id) => {
         decisionDetail.loading = true;
         decisionDetail.error = '';
@@ -901,6 +947,11 @@
         stageLabel,
         stageDetail,
         stageBadgeClass,
+        extractCsvBlocks,
+        cleanUserPrompt,
+        csvBlockKey,
+        isCsvExpanded,
+        toggleCsvBlock,
         setStageFilter: (val) => {
           decisionFilters.stage = val;
           expandMobileSteps.value = false;
