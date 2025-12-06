@@ -306,6 +306,14 @@ func (s *Source) Stats() market.SourceStats {
 	return s.stats
 }
 
+// ClearLastError resets the cached websocket error so downstream stats don't
+// keep reporting older failures after a successful reconnect.
+func (s *Source) ClearLastError() {
+	s.statsMu.Lock()
+	s.stats.LastError = ""
+	s.statsMu.Unlock()
+}
+
 func (s *Source) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

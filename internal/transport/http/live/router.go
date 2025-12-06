@@ -350,6 +350,8 @@ func (r *Router) handleLiveLogs(c *gin.Context) {
 	})
 }
 
+const maxLogLineSize = 4 * 1024 * 1024 // 4MB per line for payload-heavy logs
+
 func readLastLines(path string, limit int) ([]string, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -357,6 +359,8 @@ func readLastLines(path string, limit int) ([]string, error) {
 	}
 	defer f.Close()
 	scanner := bufio.NewScanner(f)
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, maxLogLineSize)
 	lines := make([]string, 0, limit)
 	for scanner.Scan() {
 		lines = append(lines, scanner.Text())

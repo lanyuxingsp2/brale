@@ -55,6 +55,10 @@ type LiveService struct {
 	tradeStreamUp bool
 }
 
+type wsErrorResetter interface {
+	ClearLastError()
+}
+
 type cachedQuote struct {
 	quote freqexec.TierPriceQuote
 	ts    int64
@@ -84,6 +88,7 @@ func (s *LiveService) Run(ctx context.Context) error {
 	cfg := s.cfg
 	firstWSConnected := false
 	s.updater.OnConnected = func() {
+		s.clearWSLastError()
 		if s.tg == nil {
 			return
 		}
@@ -121,6 +126,15 @@ func (s *LiveService) Run(ctx context.Context) error {
 		decisionInterval = time.Minute
 	}
 	return s.runDecisionLoop(ctx, decisionInterval)
+}
+
+func (s *LiveService) clearWSLastError() {
+	if s == nil || s.updater == nil || s.updater.Source == nil {
+		return
+	}
+	if resetter, ok := s.updater.Source.(wsErrorResetter); ok {
+		resetter.ClearLastError()
+	}
 }
 
 func (s *LiveService) runDecisionLoop(ctx context.Context, decisionInterval time.Duration) error {

@@ -225,6 +225,90 @@ a:hover {
     overflow-wrap: anywhere;
 }
 
+.step-images {
+    margin: 8px 0 12px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+}
+
+.step-image-card {
+    border: 1px solid rgba(0, 0, 0, 0.06);
+    border-radius: 10px;
+    background: #fff;
+    padding: 8px;
+    width: 180px;
+    box-shadow: inset 0 0 8px rgba(0, 0, 0, 0.03);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.step-image-thumb {
+    width: 100%;
+    height: 120px;
+    object-fit: cover;
+    border-radius: 6px;
+    border: 1px solid rgba(0, 0, 0, 0.05);
+    background: #f1f5f9;
+}
+
+.step-image-desc {
+    font-size: 0.8rem;
+    color: var(--notion-muted);
+}
+
+.step-image-link {
+    font-size: 0.75rem;
+    color: #2563eb;
+    text-decoration: underline;
+    align-self: flex-start;
+}
+
+.image-modal {
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 23, 42, 0.75);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    z-index: 1000;
+}
+
+.image-modal-content {
+    background: #fffefc;
+    border-radius: 16px;
+    box-shadow: 0 20px 60px rgba(15, 23, 42, 0.4);
+    max-width: 90vw;
+    max-height: 90vh;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.image-modal-content img {
+    max-width: 80vw;
+    max-height: 70vh;
+    border-radius: 12px;
+    border: 1px solid rgba(0, 0, 0, 0.08);
+    object-fit: contain;
+    background: #000;
+}
+
+.image-modal-desc {
+    font-size: 0.9rem;
+    color: var(--notion-muted);
+}
+
+.image-modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
 .step-head {
     display: flex;
     justify-content: space-between;

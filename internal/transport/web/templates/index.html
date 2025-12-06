@@ -269,6 +269,16 @@
                                         <pre class="step-text" v-if="(step.system_prompt || '').trim()">[[ step.system_prompt ]]</pre>
                                         <div class="step-label">User Prompt</div>
                                         <pre class="step-text">[[ step.user_prompt || '—' ]]</pre>
+                                        <template v-if="step.images && step.images.length">
+                                            <div class="step-label">Image Attachments ([[ step.images.length ]])</div>
+                                            <div class="step-images">
+                                                <div class="step-image-card" v-for="(img, imgIdx) in step.images" :key="img.data_uri || imgIdx">
+                                                    <img class="step-image-thumb" :src="img.data_uri" :alt="img.description || ('Attachment #' + (imgIdx+1))" @click="openImagePreview(img)">
+                                                    <p class="step-image-desc" v-if="(img.description || '').trim()">[[ img.description ]]</p>
+                                                    <a class="step-image-link" :href="img.data_uri" target="_blank" rel="noopener">查看原图</a>
+                                                </div>
+                                            </div>
+                                        </template>
                                         <div class="step-label">LLM Output</div>
                                         <pre class="step-text">[[ step.meta_summary || step.raw_output || '—' ]]</pre>
                                         <div class="step-label" v-if="step.decisions && step.decisions.length">Parsed Decisions</div>
@@ -623,6 +633,16 @@
             </main>
         </div>
         <div v-if="toast.message" class="toast" :class="toast.type">[[ toast.message ]]</div>
+        <div v-if="imagePreview.visible" class="image-modal" @click.self="closeImagePreview">
+            <div class="image-modal-content">
+                <img :src="imagePreview.src" :alt="imagePreview.desc || 'LLM Attachment'">
+                <p class="image-modal-desc" v-if="imagePreview.desc">[[ imagePreview.desc ]]</p>
+                <div class="image-modal-actions">
+                    <a class="pill-btn" :href="imagePreview.src" target="_blank" rel="noopener">在新标签打开</a>
+                    <button class="pill-btn" @click="closeImagePreview">关闭</button>
+                </div>
+            </div>
+        </div>
     </script>
 
     <div id="app"></div>

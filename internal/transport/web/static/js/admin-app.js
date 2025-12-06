@@ -289,6 +289,7 @@
         submitting: false,
       });
       const toast = reactive({ message: '', type: 'info' });
+      const imagePreview = reactive({ visible: false, src: '', desc: '' });
 
       const loadingAny = computed(
         () =>
@@ -787,6 +788,19 @@
         }
       };
 
+      const openImagePreview = (img) => {
+        if (!img || !img.data_uri) return;
+        imagePreview.src = img.data_uri;
+        imagePreview.desc = (img.description || '').trim();
+        imagePreview.visible = true;
+      };
+
+      const closeImagePreview = () => {
+        imagePreview.visible = false;
+        imagePreview.src = '';
+        imagePreview.desc = '';
+      };
+
       onMounted(() => {
         switchView(view.value);
       });
@@ -807,6 +821,7 @@
         manualOpen,
         defaultSymbols,
         toast,
+        imagePreview,
         loadingAny,
         decisionTotalPages,
         positionTotalPages,
@@ -838,6 +853,8 @@
         manualTierSum,
         loadManualPrice,
         submitManualOpen,
+        openImagePreview,
+        closeImagePreview,
         formatDuration,
         stageLabel,
         stageDetail,
