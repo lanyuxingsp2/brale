@@ -771,6 +771,7 @@ func (o *DecisionLogObserver) AfterDecide(ctx context.Context, trace decision.De
 	if o == nil || o.store == nil {
 		return
 	}
+	candidateSymbols := normalizeSymbols(trace.Candidates)
 	base := DecisionLogRecord{
 		TraceID:    trace.TraceID,
 		Timestamp:  time.Now().UnixMilli(),
@@ -789,7 +790,7 @@ func (o *DecisionLogObserver) AfterDecide(ctx context.Context, trace decision.De
 		rec.RawJSON = out.Parsed.RawJSON
 		rec.Meta = out.Parsed.MetaSummary
 		rec.Decisions = append([]decision.Decision(nil), out.Parsed.Decisions...)
-		rec.Symbols = collectSymbols(rec.Decisions)
+		rec.Symbols = mergeSymbolLists(collectSymbols(rec.Decisions), candidateSymbols)
 		rec.Images = attachmentsFromProviderImages(out.Images)
 		rec.VisionSupported = out.VisionEnabled
 		rec.ImageCount = len(out.Images)
@@ -812,7 +813,7 @@ func (o *DecisionLogObserver) AfterDecide(ctx context.Context, trace decision.De
 	finalRec.RawJSON = trace.Best.Parsed.RawJSON
 	finalRec.Meta = trace.Best.Parsed.MetaSummary
 	finalRec.Decisions = append([]decision.Decision(nil), trace.Best.Parsed.Decisions...)
-	finalRec.Symbols = collectSymbols(finalRec.Decisions)
+	finalRec.Symbols = mergeSymbolLists(collectSymbols(finalRec.Decisions), candidateSymbols)
 	finalRec.Images = attachmentsFromProviderImages(trace.Best.Images)
 	finalRec.VisionSupported = trace.Best.VisionEnabled
 	finalRec.ImageCount = len(trace.Best.Images)
@@ -841,7 +842,7 @@ func (o *DecisionLogObserver) AfterDecide(ctx context.Context, trace decision.De
 			rec.RawJSON = ""
 			rec.Meta = ""
 			rec.Decisions = nil
-			rec.Symbols = nil
+			rec.Symbols = mergeSymbolLists(nil, candidateSymbols)
 			rec.Note = "agent"
 			if ins.Warned {
 				rec.Note += "|warned"
