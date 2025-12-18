@@ -134,11 +134,11 @@ func validateProfileDef(name string, def cfgloader.ProfileDefinition) error {
 		return fmt.Errorf("profile %s 缺少有效的分析窗口", name)
 	}
 	// Mandatory prompts validation
-	if strings.TrimSpace(def.Prompts.System) == "" {
-		return fmt.Errorf("profile %s 缺少 prompts.system 配置，必须为每个 profile 指定 system prompt", name)
-	}
 	if strings.TrimSpace(def.Prompts.User) == "" {
 		return fmt.Errorf("profile %s 缺少 prompts.user 配置，必须为每个 profile 指定 user prompt", name)
+	}
+	if len(def.Prompts.SystemByModel) == 0 {
+		return fmt.Errorf("profile %s 缺少 prompts.system_by_model 配置，必须为每个启用模型指定 system prompt", name)
 	}
 	return nil
 }
@@ -277,7 +277,7 @@ func collectSymbolDetails(snapshot cfgloader.ProfileSnapshot, exitReg *exitplan.
 		strategies, exitSummary, exitCombos := summarizeExitPlans(def.ExitPlans.ComboKeys(), exitReg)
 
 		// Assign to each target symbol
-		sysPrompt := strings.TrimSuffix(def.Prompts.System, ".txt")
+		sysPrompt := summarizeSystemPromptRefs(def.Prompts.SystemByModel)
 		userPrompt := strings.TrimSuffix(def.Prompts.User, ".txt")
 
 		for _, sym := range def.TargetsUpper() {
@@ -293,6 +293,34 @@ func collectSymbolDetails(snapshot cfgloader.ProfileSnapshot, exitReg *exitplan.
 		}
 	}
 	return out
+}
+
+func summarizeSystemPromptRefs(refs map[string]string) string {
+	if len(refs) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(refs))
+	for modelID := range refs {
+		modelID = strings.TrimSpace(modelID)
+		if modelID == "" {
+			continue
+		}
+		keys = append(keys, modelID)
+	}
+	if len(keys) == 0 {
+		return ""
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, modelID := range keys {
+		ref := strings.TrimSpace(refs[modelID])
+		ref = strings.TrimSuffix(ref, ".txt")
+		if ref == "" {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s:%s", modelID, ref))
+	}
+	return strings.Join(parts, ", ")
 }
 
 func setToSortedSlice(set map[string]struct{}) []string {

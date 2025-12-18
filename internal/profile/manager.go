@@ -17,16 +17,16 @@ type MiddlewareFactory interface {
 
 // Runtime 表示编译后的 profile。
 type Runtime struct {
-	Definition    loader.ProfileDefinition
-	Pipeline      *pipeline.Pipeline
-	SystemPrompt  string
-	UserPrompt    string
-	UserTemplate  *template.Template
-	AnalysisSlice int
-	SliceDropTail int
-	IndicatorBars int
-	Derivatives   loader.DerivativesConfig
-	AgentEnabled  bool
+	Definition           loader.ProfileDefinition
+	Pipeline             *pipeline.Pipeline
+	SystemPromptsByModel map[string]string
+	UserPrompt           string
+	UserTemplate         *template.Template
+	AnalysisSlice        int
+	SliceDropTail        int
+	IndicatorBars        int
+	Derivatives          loader.DerivativesConfig
+	AgentEnabled         bool
 }
 
 // Manager 维护 symbol -> profile 的映射，并响应热更新。
@@ -93,7 +93,7 @@ func (m *Manager) rebuild(snapshot loader.ProfileSnapshot) {
 			logger.Warnf("profile %s has no valid middlewares", name)
 			continue
 		}
-		sysPrompt := m.loadPrompt(def.Name, def.Prompts.System)
+		sysPrompts := m.loadSystemPrompts(def.Name, def.Prompts.SystemByModel)
 		userPrompt := m.loadPrompt(def.Name, def.Prompts.User)
 		var userTpl *template.Template
 		if strings.TrimSpace(userPrompt) != "" {
@@ -104,16 +104,16 @@ func (m *Manager) rebuild(snapshot loader.ProfileSnapshot) {
 			}
 		}
 		rt := &Runtime{
-			Definition:    def,
-			Pipeline:      pipeline.New(name, mws...),
-			SystemPrompt:  sysPrompt,
-			UserPrompt:    userPrompt,
-			UserTemplate:  userTpl,
-			AnalysisSlice: def.AnalysisSlice,
-			SliceDropTail: def.SliceDropTail,
-			IndicatorBars: estimateIndicatorBars(def),
-			Derivatives:   def.Derivatives,
-			AgentEnabled:  def.AgentEnabled(),
+			Definition:           def,
+			Pipeline:             pipeline.New(name, mws...),
+			SystemPromptsByModel: sysPrompts,
+			UserPrompt:           userPrompt,
+			UserTemplate:         userTpl,
+			AnalysisSlice:        def.AnalysisSlice,
+			SliceDropTail:        def.SliceDropTail,
+			IndicatorBars:        estimateIndicatorBars(def),
+			Derivatives:          def.Derivatives,
+			AgentEnabled:         def.AgentEnabled(),
 		}
 		newProfiles[name] = rt
 		if def.Default {
@@ -156,6 +156,34 @@ func (m *Manager) loadPrompt(profileName, ref string) string {
 		return ""
 	}
 	return text
+}
+
+func (m *Manager) loadSystemPrompts(profileName string, refs map[string]string) map[string]string {
+	if m == nil || m.promptLoader == nil || len(refs) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(refs))
+	for modelID, ref := range refs {
+		modelID = strings.TrimSpace(modelID)
+		ref = strings.TrimSpace(ref)
+		if modelID == "" || ref == "" {
+			continue
+		}
+		text, err := m.promptLoader.Load(ref)
+		if err != nil {
+			logger.Warnf("profile %s 加载 system prompt 失败 model=%s ref=%s err=%v", profileName, modelID, ref, err)
+			continue
+		}
+		text = strings.TrimSpace(text)
+		if text == "" {
+			continue
+		}
+		out[modelID] = text
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 const defaultIndicatorBars = 240

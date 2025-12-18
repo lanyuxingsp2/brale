@@ -2,7 +2,7 @@ app:
   log_level: "info"               # 日志级别
   http_addr: ":9991"              # HTTP 服务监听地址
   llm_log_path: "/data/logs/brale-llm.log"
-  llm_dump_payload: true
+  llm_dump_payload: false
 
 market:
   active_source: "binance"
@@ -35,47 +35,38 @@ ai:
   models:
     - id: "deepseek"
       provider: "deepseek"
-      enabled: true
-      api_url: "https://api.qnaigc.com/v1"
-      api_key: "sk-03112ba45788f17f691825f502ef894e6971830bed28fe3aecb7567d088c850b"
+      enabled: false
+      api_url: ""
+      api_key: ""
       model: "deepseek/deepseek-v3.2-exp-thinking"
       supports_vision: false
       expect_json: false
     - id: "qwen"
       provider: "qwen"
-      enabled: true
-      api_url: "https://api.qnaigc.com/v1"
-      api_key: "sk-03112ba45788f17f691825f502ef894e6971830bed28fe3aecb7567d088c850b"
+      enabled: false
+      api_url: ""
+      api_key: ""
       model: "qwen3-max"
       supports_vision: false
       expect_json: false
     - id: "doubao"
       provider: "doubao"
-      enabled: true
-      api_url: "https://api.qnaigc.com/v1"
-      api_key: "sk-03112ba45788f17f691825f502ef894e6971830bed28fe3aecb7567d088c850b"
+      enabled: false
+      api_url: ""
+      api_key: ""
       model: "doubao-seed-1.6-thinking"
-      supports_vision: false
-      expect_json: false
-    - id: "vanchin"
-      provider: "vanchin"
-      enabled: true
-      final_disabled: true
-      api_url: "https://vanchin.streamlake.ai/api/gateway/v1/endpoints"
-      api_key: "lbxRL5DoFsKnkyya4PZzYNwjSSq1DZ5tiLWb4pvTUXw"
-      model: "ep-z5gybo-1762362617887467865"
       supports_vision: false
       expect_json: false
 
 notify:
   telegram:
     enabled: true
-    bot_token: "7979485253:AAGwHX5anXqL8tO9GaSXJuX6YtYwYBQZXz0"
-    chat_id: "-1003001441406"
+    bot_token: ""
+    chat_id: ""
 
 freqtrade:
-  username: "lauk"
-  password: "881016"
+  username: ""
+  password: ""
   api_url: "http://freqtrade:8080/api/v1"
   min_stop_distance_pct: 0.005
   entry_slip_pct: 0.0002

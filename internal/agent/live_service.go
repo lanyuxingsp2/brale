@@ -7,13 +7,13 @@ import (
 	"time"
 
 	"brale/internal/agent/engine"
+	"brale/internal/agent/ports"
 	mktsvc "brale/internal/agent/service/market"
 	"brale/internal/agent/service/position"
 	brcfg "brale/internal/config"
 	"brale/internal/decision"
 	"brale/internal/exitplan"
 	"brale/internal/gateway/database"
-	"brale/internal/gateway/exchange"
 	"brale/internal/gateway/notifier" // Used if we add logging
 	"brale/internal/market"
 	"brale/internal/profile"
@@ -33,7 +33,7 @@ type LiveServiceParams struct {
 	HorizonName     string
 	HorizonSummary  string
 	WarmupSummary   string
-	ExecManager     exchange.ExecutionManager
+	ExecManager     ports.ExecutionManager
 	VisionReady     bool
 	ProfileManager  *profile.Manager
 	ExitPlans       *exitplan.Registry
@@ -55,7 +55,7 @@ type LiveService struct {
 	hSummary      string
 	warmupSummary string
 
-	execManager exchange.ExecutionManager
+	execManager ports.ExecutionManager
 
 	profileMgr     *profile.Manager
 	exitPlans      *exitplan.Registry

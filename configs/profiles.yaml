@@ -2,8 +2,8 @@ profiles:
   eth_plan_combo:
     context_tag: "ETH 分阶段策略"
     targets: ["ETH/USDT"]                   # 仅回放 ETH/USDT
-    intervals: ["15m", "1h", "4h", "1d"]    # 汇总 4 个周期
-    decision_interval_multiple: 2           # 决策调度：最短K线周期 * 倍数（UTC对齐），默认 1
+    intervals: ["15m", "1h", "4h"]    # 汇总 4 个周期
+    decision_interval_multiple: 4           # 决策调度：最短K线周期 * 倍数（UTC对齐），默认 1
     analysis_slice: 160                     # 每个周期截取 160 根
     slice_drop_tail: 1                      # 舍弃最新 1 根，避免未收线
     # middlewares 中如启用 ema/rsi/macd，将自动触发 Multi-Agent；若全部关闭则 Provider 阶段不会调用 Agent。
@@ -13,7 +13,7 @@ profiles:
         critical: true
         timeout_seconds: 5
         params:
-          intervals: ["15m", "1h", "4h", "1d"]
+          intervals: ["15m", "1h", "4h"]
           limit: 240
       - name: ema_trend                     # EMA 运行参数，支持多周期共振
         stage: 1
@@ -21,24 +21,24 @@ profiles:
           "15m": { fast: 8, mid: 21, slow: 55 }
           "1h":  { fast: 8, mid: 21, slow: 55 }
           "4h":  { fast: 20, mid: 50, slow: 200 }
-          "1d":  { fast: 20, mid: 50, slow: 200 }
       - name: rsi_extreme                   # RSI 极值过滤，防止追高杀低
         stage: 1
         configs:
           "15m": { period: 14, overbought: 75, oversold: 25 }
           "1h":  { period: 14, overbought: 70, oversold: 30 }
           "4h":  { period: 14, overbought: 70, oversold: 30 }
-          "1d":  { period: 14, overbought: 70, oversold: 30 }
       - name: macd_trend                    # MACD 灵敏参数，方便回测
         stage: 1
         configs:
           "15m": { fast: 5, slow: 13, signal: 8 }
           "1h":  { fast: 12, slow: 26, signal: 9 }
           "4h":  { fast: 12, slow: 26, signal: 9 }
-          "1d":  { fast: 12, slow: 26, signal: 9 }
     prompts:
-      system: "default.txt"                 # System prompt 完全由 profile 控制
       user: "lauk.txt"  # User prompt 细化 exit_plan 约束
+      system_by_model:
+        deepseek: "system-eth1.txt"
+        qwen: "system-eth2.txt"
+        doubao: "system-eth3.txt"
     derivatives:                            # 衍生品注入开关（未启用则完全跳过 OI/Funding 抓取）
       enabled: true
       include_oi: true
@@ -50,7 +50,7 @@ profiles:
     context_tag: "BTC 分阶段策略"
     targets: ["BTC/USDT"]
     intervals: ["15m"]
-    decision_interval_multiple: 1
+    decision_interval_multiple: 2
     analysis_slice: 160
     slice_drop_tail: 1
     middlewares:
@@ -62,8 +62,11 @@ profiles:
           intervals: ["15m"]
           limit: 240
     prompts:
-      system: "default.txt"
       user: "btc.txt"
+      system_by_model:
+        deepseek: "default.txt"
+        qwen: "default.txt"
+        doubao: "default.txt"
     derivatives:
       enabled: true
       include_oi: true

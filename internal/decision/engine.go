@@ -45,13 +45,13 @@ type PromptBundle struct {
 
 // ProfilePromptSpec 记录单个 symbol 对应 profile 的提示词模板。
 type ProfilePromptSpec struct {
-	Profile         string
-	ContextTag      string
-	PromptRef       string
-	SystemPrompt    string // 该 symbol 对应 profile 的 system prompt
-	UserPrompt      string
-	ExitConstraints string
-	Example         string
+	Profile              string
+	ContextTag           string
+	PromptRef            string
+	SystemPromptsByModel map[string]string // model.id -> system prompt（最终决策阶段按模型选择）
+	UserPrompt           string
+	ExitConstraints      string
+	Example              string
 }
 
 // Decider 决策器接口：将上下文转为决策结果

@@ -11,7 +11,6 @@ import (
 	"brale/internal/gateway/notifier"
 	"brale/internal/logger"
 	"brale/internal/pkg/utils"
-	"brale/internal/trader"
 )
 
 const (
@@ -336,21 +335,7 @@ func (s *LiveService) lookupEntryPrice(symbol string) float64 {
 	if s.execManager == nil {
 		return 0
 	}
-	// Note: s.execManager.TraderActor() relies on adapter package, but TraderActor returns interface{}
-	// We need to cast it to *trader.Trader basically.
-	raw := s.execManager.TraderActor()
-	actor, ok := raw.(*trader.Trader)
-	if !ok || actor == nil {
-		return 0
-	}
-	snap := actor.Snapshot()
-	if snap == nil || snap.Positions == nil {
-		return 0
-	}
-	if pos, ok := snap.Positions[strings.ToUpper(symbol)]; ok && pos != nil {
-		return pos.EntryPrice
-	}
-	return 0
+	return s.execManager.EntryPriceBySymbol(strings.ToUpper(symbol))
 }
 
 func (s *LiveService) notifyEntryTimeout(ctx context.Context, d decision.Decision) {

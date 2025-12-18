@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	"brale/internal/agent"
@@ -12,6 +13,7 @@ import (
 	"brale/internal/exitplan"
 	"brale/internal/gateway/database"
 	freqexec "brale/internal/gateway/freqtrade"
+	"brale/internal/gateway/notifier"
 	"brale/internal/gateway/provider"
 	"brale/internal/logger"
 	"brale/internal/pipeline/factory"
@@ -36,7 +38,7 @@ type AppBuilder struct {
 	marketStackFn       func(context.Context, *brcfg.Config, []string, []string, map[string]int, []string) (*MarketStack, error)
 	modelProvidersFn    func(context.Context, brcfg.AIConfig, int) ([]provider.ModelProvider, map[string]bool, bool, error)
 	decisionArtifactsFn func(context.Context, brcfg.AIConfig, *decision.LegacyEngineAdapter) (*decisionArtifacts, error)
-	freqManagerFn       func(brcfg.FreqtradeConfig, string, *database.DecisionLogStore, database.LivePositionStore, store.Store, freqexec.TextNotifier) (*freqexec.Manager, error)
+	freqManagerFn       func(brcfg.FreqtradeConfig, string, *database.DecisionLogStore, database.LivePositionStore, store.Store, notifier.TextNotifier) (*freqexec.Manager, error)
 	liveHTTPFn          func(brcfg.AppConfig, *database.DecisionLogStore, livehttp.FreqtradeWebhookHandler, []string, map[string]livehttp.SymbolDetail) (*livehttp.Server, error)
 
 	liveStoreOverride     database.LivePositionStore
@@ -120,7 +122,11 @@ func (b *AppBuilder) Build(ctx context.Context) (*App, error) {
 		promptLoader = profile.NewPromptLoader(pm, ".", cfg.Prompt.Dir)
 	}
 
-	if err := validateProfilePrompts(profileSnapshot, promptLoader); err != nil {
+	requiredModelIDs, err := enabledFinalModelIDs(cfg.AI)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateProfilePrompts(profileSnapshot, promptLoader, requiredModelIDs); err != nil {
 		return nil, err
 	}
 
@@ -155,14 +161,12 @@ func (b *AppBuilder) Build(ctx context.Context) (*App, error) {
 	})
 
 	tgClient := newTelegram(cfg.Notify)
-	var agentNotifier decision.TextNotifier
-	var freqNotifier freqexec.TextNotifier
+	var textNotifier notifier.TextNotifier
 	if tgClient != nil {
-		agentNotifier = tgClient
-		freqNotifier = tgClient
+		textNotifier = tgClient
 	}
-	if agentNotifier != nil {
-		engine.AgentNotifier = agentNotifier
+	if textNotifier != nil {
+		engine.AgentNotifier = textNotifier
 	}
 
 	decArtifacts, err := b.decisionArtifactsFn(ctx, cfg.AI, engine)
@@ -228,7 +232,7 @@ func (b *AppBuilder) Build(ctx context.Context) (*App, error) {
 		}
 	}
 
-	freqManager, err := b.freqManagerFn(cfg.Freqtrade, cfg.AI.ActiveHorizon, decArtifacts.store, liveStore, newStore, freqNotifier)
+	freqManager, err := b.freqManagerFn(cfg.Freqtrade, cfg.AI.ActiveHorizon, decArtifacts.store, liveStore, newStore, textNotifier)
 	if err != nil {
 		return nil, err
 	}
@@ -321,17 +325,45 @@ func (b *AppBuilder) Build(ctx context.Context) (*App, error) {
 	}, nil
 }
 
-func validateProfilePrompts(snapshot cfgloader.ProfileSnapshot, loader profile.PromptLoader) error {
+func enabledFinalModelIDs(cfg brcfg.AIConfig) ([]string, error) {
+	models := cfg.MustResolveModelConfigs()
+	ids := make([]string, 0, len(models))
+	seen := make(map[string]struct{}, len(models))
+	for _, m := range models {
+		if !m.Enabled || m.FinalDisabled {
+			continue
+		}
+		id := strings.TrimSpace(m.ID)
+		if id == "" {
+			return nil, fmt.Errorf("ai.models.id 不能为空（enabled && !final_disabled 的模型必须配置 id）")
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids, nil
+}
+
+func validateProfilePrompts(snapshot cfgloader.ProfileSnapshot, loader profile.PromptLoader, modelIDs []string) error {
 	if loader == nil {
 		return fmt.Errorf("prompt loader 未初始化")
 	}
 	for name, def := range snapshot.Profiles {
-		sys, err := loader.Load(def.Prompts.System)
-		if err != nil {
-			return fmt.Errorf("profile %s 加载 system prompt 失败: %w", name, err)
-		}
-		if strings.TrimSpace(sys) == "" {
-			return fmt.Errorf("profile %s 的 system prompt 内容为空", name)
+		for _, modelID := range modelIDs {
+			ref := strings.TrimSpace(def.Prompts.SystemByModel[modelID])
+			if ref == "" {
+				return fmt.Errorf("profile %s 缺少 prompts.system_by_model.%s 配置", name, modelID)
+			}
+			sys, err := loader.Load(ref)
+			if err != nil {
+				return fmt.Errorf("profile %s 加载 system prompt 失败 model=%s: %w", name, modelID, err)
+			}
+			if strings.TrimSpace(sys) == "" {
+				return fmt.Errorf("profile %s 的 system prompt 内容为空 model=%s", name, modelID)
+			}
 		}
 		user, err := loader.Load(def.Prompts.User)
 		if err != nil {
@@ -436,7 +468,7 @@ func WithStorageOverrides(live database.LivePositionStore, strategy exit.Strateg
 }
 
 // WithFreqManager overrides the freqtrade manager builder.
-func WithFreqManager(fn func(brcfg.FreqtradeConfig, string, *database.DecisionLogStore, database.LivePositionStore, store.Store, freqexec.TextNotifier) (*freqexec.Manager, error)) AppBuilderOption {
+func WithFreqManager(fn func(brcfg.FreqtradeConfig, string, *database.DecisionLogStore, database.LivePositionStore, store.Store, notifier.TextNotifier) (*freqexec.Manager, error)) AppBuilderOption {
 	return func(b *AppBuilder) {
 		if fn != nil {
 			b.freqManagerFn = fn

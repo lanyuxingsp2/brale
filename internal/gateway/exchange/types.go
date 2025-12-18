@@ -6,8 +6,6 @@ package exchange
 import (
 	"context"
 	"time"
-
-	"brale/internal/decision"
 )
 
 // Position represents a trading position on any exchange.
@@ -175,44 +173,6 @@ type TradeEvent struct {
 // PlanUpdateHook interface for receiving plan update notifications
 type PlanUpdateHook interface {
 	NotifyPlanUpdated(context.Context, int)
-}
-
-// StrategyPlanSnapshot placeholder interface/struct?
-// For now use interface{} or define simplified struct if strictly needed by interface.
-// Since Manager uses exit.StrategyPlanSnapshot, we can import exit package here?
-// But exchange is low level.
-// We can use any for now or define a compatible struct.
-// Or just let ExecutionManager depend on exit package?
-// It's probably better to keep exchange independent.
-// But ExecutionManager is application level interface really.
-// Let's use `any` for plans to avoid dependency, or duplicate struct.
-// Actually `manager.go` uses `exit.StrategyPlanSnapshot`.
-// Let's define the method to take `any` in interface? `SyncStrategyPlans(ctx, id, plans any) error`.
-
-// ExecutionManager defines the high-level interface for execution management
-// used by the agent/live service.
-type ExecutionManager interface {
-	ManualOpenPosition(context.Context, ManualOpenRequest) error
-	AccountBalance() Balance
-	SetPlanUpdateHook(PlanUpdateHook)
-
-	// New methods needed by agent
-	ListOpenPositions(context.Context) ([]Position, error)
-	GetLatestPriceQuote(context.Context, string) (PriceQuote, error)
-	RefreshBalance(context.Context) (Balance, error)
-	SyncStrategyPlans(context.Context, int, any) error // any to avoid dependency on exit
-	CloseFreqtradePosition(context.Context, int, string, string, float64) error
-
-	HandleWebhook(context.Context, WebhookMessage)
-	PositionsForAPI(context.Context, PositionListOptions) (PositionListResult, error)
-	ListFreqtradeEvents(context.Context, int, int) ([]TradeEvent, error)
-	PublishPrice(string, PriceQuote)
-
-	// Legacy/Helper methods required by current agent implementation
-	TradeIDBySymbol(string) (int, bool)
-	CacheDecision(string, decision.Decision) string
-	Execute(context.Context, decision.DecisionInput) error
-	TraderActor() interface{}
 }
 
 // WebhookMessage structure

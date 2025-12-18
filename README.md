@@ -5,30 +5,133 @@
 > *"Break a leg" in your trading journey!*
 
 [![中文文档](https://img.shields.io/badge/lang-中文-red.svg)](doc/README_CN.md)
-[![Go Version](https://img.shields.io/github/go-mod/go-version/lauk/brale)](go.mod)
+[![Go Version](https://img.shields.io/badge/go-1.24.0-blue.svg)](go.mod)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-**Brale** is a quantitative strategy generator with AI decision-making at its core. Instead of holding funds directly, it acts as a "Super Brain," utilizing multiple agents (Technical Indicators, Pattern Recognition, Trend Analysis) to collaboratively analyze the market. It ultimately generates decision signals via an LLM (Large Language Model) provider and executes trades securely through the powerful [Freqtrade](https://github.com/freqtrade/freqtrade) engine.
+**Brale** is a quantitative trading system that perfectly decouples **"AI Deep Thinking"** from **"Quantitative Execution"**. It leverages multi-agent collaboration (Trend, Pattern, Momentum) combined with top-tier LLMs (GPT-4o, Claude 3.5, DeepSeek) to generate high-probability decisions, executed with millisecond-level risk alignment.
 
 ## ✨ Key Features
 
-- 🧠 **AI-Driven Decision Making**: Abandons traditional hard-coded logic in favor of LLM-based comprehensive analysis of multi-dimensional data, thinking like a human trader.
-- 🤖 **Multi-Agent Collaboration**:
-  - **Technical Agent**: Calculates hard indicators like EMA, RSI, MACD, ATR.
-  - **Pattern Agent**: Identifies candlestick patterns (e.g., Head and Shoulders, Engulfing).
-  - **Trend Agent**: Combines Multi-timeframe analysis to determine the broader trend.
-- 🛡️ **Standing on the Shoulders of Giants**: Seamless integration with **Freqtrade**. You focus on strategy signals, while Freqtrade handles position management, stop-loss/take-profit, and exchange connectivity.
-- ⚡ **High Performance**: Core logic written in Go, handling concurrent data fetching and indicator calculation for multiple coins.
-- 📊 **Visualization & Explainability**: Generates charts and natural language analysis reports, letting you understand *why* the AI decided to open a trade.
+- 🧠 **Dual-Loop Architecture**:
+  - **Slow Decision Loop**: Triggered by the Aligned Scheduler, performing multi-dimensional deep reasoning using LLMs at candle boundaries.
+  - **Fast Execution Loop**: Driven by the `Plan Scheduler`, providing millisecond-level price monitoring for precise Take-Profit/Stop-Loss (TP/SL) execution.
+- 🤖 **Distributed Multi-Agent Reasoning**:
+  - **Indicator Agent**: Focuses on momentum resonance across RSI, MACD, and ATR.
+  - **Pattern Agent**: Identifies Price Action, SMC liquidity zones, and classic candlestick patterns.
+  - **Trend Agent**: Filters noise to focus on broader market structures across multiple timeframes.
+- ⚙️ **Highly Configurable**:
+  - **Dynamic Prompt Injection**: Supports independent prompt libraries for different symbols (e.g., BTC, ETH, SOL).
+  - **Flexible Strategy Hub**: Define complex exit plans via YAML (tiered TP, dynamic ATR-based trailing stop-loss).
+- 🛡️ **Passive Executor Mode**: Seamlessly integrates with **Freqtrade** as an execution terminal. Brale maintains full control, using Freqtrade's stable infrastructure for order fulfillment while keeping the strategy logic centralized in Brale.
+- ⚡ **High-Performance Go Core**: Concurrent handling of multi-symbol data fetching, indicator calculation, and agent orchestration.
 
 ## 🏗️ Architecture
 
 ![Architecture](doc/Reasoning-Edition.png)
 
-1.  **Data Acquisition**: Fetches K-line data from exchanges like Binance.
-2.  **Analysis**: Splits data into multiple timeframes and delegates it to Technical, Pattern, and Trend Agents for collaborative analysis.
-3.  **Decision**: Aggregates Agent conclusions and generates a final decision via a Provider (e.g., LLM).
-4.  **Execution**: Strategy signals are aggregated by weight and sent to Freqtrade for execution.
+```mermaid
+---
+config:
+  layout: fixed
+  theme: neo
+---
+flowchart TB
+    %% ==================== Layer Definitions ====================
+    subgraph Layer0 ["Layer 0: Scheduling & Config"]
+        direction TB
+        Scheduler["Aligned Scheduler"]:::scheduler
+        PlanSched["Plan Scheduler"]:::scheduler
+        
+        subgraph ConfigHub ["Configuration Hub"]
+            direction TB
+            Profile["Profile Config<br>(profiles.yaml)"]:::config
+            PromptLib["Prompt Library<br>(prompts/*.txt)"]:::config
+            StratLib["Strategy Config<br>(exit_strategies.yaml)"]:::config
+        end
+    end
+
+    subgraph Layer1 ["Layer 1: Holographic Perception"]
+        direction TB
+        Exchange(("Exchange")):::external
+        Gateway["Gateway"]:::data
+        KlineStore[("Kline Store")]:::data
+    end
+
+    subgraph Layer2 ["Layer 2: Analysis Pipeline"]
+        direction TB
+        CtxInit["Context Init"]:::pipe
+        subgraph Middleware ["Middleware Chain"]
+            Stage0["Slicer"]:::pipe
+            Stage1["Indicators"]:::pipe
+            Stage2["Formatter"]:::pipe
+        end
+        AnalysisData["Analysis Context"]:::data
+    end
+
+    subgraph Layer3 ["Layer 3: Multi-Agent Reasoning"]
+        direction TB
+        IndAgent["Indicator Agent"]:::agent
+        PatAgent["Pattern Agent"]:::agent
+        TrendAgent["Trend Agent"]:::agent
+    end
+
+    subgraph ModelArena ["LLM Model Arena"]
+        direction TB
+        GPT["GPT-4o"]:::external
+        Claude["Claude 3.5"]:::external
+        DeepSeek["DeepSeek V3"]:::external
+    end
+
+    subgraph Layer4 ["Layer 4: Decision Engine"]
+        direction TB
+        ContextBuilder["Context Builder"]:::brain
+        Aggregator{"Meta Aggregator"}:::meta
+        Policy["ExitPlan Policy"]:::brain
+    end
+
+    subgraph Layer5 ["Layer 5: Execution & Feedback"]
+        direction TB
+        ExecEngine["Execution Engine"]:::exec
+        Freqtrade["Freqtrade Bot<br>(Passive)"]:::exec
+        DB[("Global DB")]:::db
+    end
+
+    %% ==================== Core Links ====================
+    Scheduler -->|Trigger| Profile
+    Profile -.->|Selects| PromptLib
+    Profile -->|Configures| CtxInit
+    PromptLib -.->|Injects| ContextBuilder
+    
+    Exchange -- Stream --> Gateway --> KlineStore
+    KlineStore --> Stage0 --> Stage1 --> Stage2 --> AnalysisData
+    
+    AnalysisData --> IndAgent & PatAgent & TrendAgent --> ContextBuilder
+    ContextBuilder --> GPT & Claude & DeepSeek --> Aggregator
+    
+    Aggregator -- "Consensus" --> Policy -- "Valid" --> ExecEngine
+    
+    ExecEngine -- "Force Entry" --> Freqtrade
+    ExecEngine -- "Register Plan" --> PlanSched
+    
+    Gateway -. "Price Tick" .-> PlanSched
+    PlanSched -- "Check TP/SL" --> PlanSched
+    PlanSched -- "Trigger Exit" --> Freqtrade
+    
+    Freqtrade -- "Order" --> Exchange
+    Freqtrade -- "Report" --> DB
+
+    %% ==================== Style Definitions ====================
+    classDef scheduler fill:#f9f,stroke:#333,stroke-width:2px;
+    classDef config fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px;
+    classDef external fill:#f5f5f5,stroke:#9e9e9e,stroke-width:2px,stroke-dasharray:5 5;
+    classDef data fill:#e3f2fd,stroke:#1565c0,stroke-width:2px;
+    classDef pipe fill:#e0f2f1,stroke:#00695c,stroke-width:2px;
+    classDef agent fill:#fff3e0,stroke:#e65100,stroke-width:2px;
+    classDef brain fill:#fff3e0,stroke:#e65100,stroke-width:2px;
+    classDef meta fill:#fff8e1,stroke:#ff8f00,stroke-width:3px;
+    classDef exec fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px;
+    classDef db fill:#eceff1,stroke:#455a64,stroke-width:2px;
+```
 
 ## ⚠️ Financial Disclaimer
 
@@ -46,66 +149,30 @@ cp configs/user_data/freqtrade-config.example.json configs/user_data/freqtrade-c
 # Notes:
 # 1. Fill in your LLM API Key in configs/config.yaml
 # 2. Configure Exchange API in configs/user_data/freqtrade-config.json (or use dry-run mode)
-# 3. Update [ai.multi_agent], [ai.provider_preference], and profile parameters in config.yaml/profiles.yaml as needed.
-# 4. Ensure [freqtrade.username] and [freqtrade.password] in config.yaml match [api_server.username] and [api_server.password] in freqtrade-config.json.
-# 5. To enable Telegram notifications: Set [telegram.enabled] in freqtrade-config.json AND [notify.telegram.enabled] in config.yaml to true, then fill in the token and chat_id.
-```
-
-#### 1.1 Proxy Access
-```bash
-# 1. If using a proxy, enable [market.sources.proxy.enabled] in config.yaml and fill in your HTTP/SOCKS5 links.
-# 2. Uncomment the proxy environment variables in docker-compose.yml (for both freqtrade and brale services) and set HTTP_PROXY / HTTPS_PROXY to your local port.
-# 3. Update [exchange.ccxt_config.proxies] and [exchange.ccxt_async_config.aiohttp_proxy] in freqtrade-config.json with your local port (copy these fields to your active config if needed).
 ```
 
 ### 2. Start Services
-
-Recommended: Use the Make command for a one-click start (cleans environment, prepares directories, and starts services in order):
 
 ```bash
 make start
 ```
 
-Or manual steps:
-
-```bash
-# 1. Prepare data directories
-make prepare-dirs
-
-# 2. Start Freqtrade (must be started first)
-BRALE_DATA_ROOT=running_log/brale_data FREQTRADE_USERDATA_ROOT=running_log/freqtrade_data docker compose up -d freqtrade
-
-# 3. Start Brale
-BRALE_DATA_ROOT=running_log/brale_data FREQTRADE_USERDATA_ROOT=running_log/freqtrade_data docker compose up -d brale
-```
-
-### 3. Verification
-
-```bash
-# View logs
-make logs
-
-# Health check
-curl http://localhost:9991/healthz
-```
-
 ## 🔌 Execution Layer (Pluggable)
 
-Brale executes trades through a pluggable executor abstraction. The default implementation uses [Freqtrade](https://github.com/freqtrade/freqtrade), but nothing in the core logic is tied to it:
+Brale executes trades through an `Execution Engine` abstraction. The default implementation uses [Freqtrade](https://github.com/freqtrade/freqtrade), but it is decoupled:
 
-- Set `freqtrade.enabled` to `false` in `configs/config.yaml` if you only want signal generation or plan to supply your own executor.
-- The executor interface lives in `internal/gateway/freqtrade/executor.go` and defines the full contract (position sync, plan events, manual tier updates, etc.). Any implementation that satisfies this interface can be injected.
-- Plug in a custom executor by implementing that interface (e.g., for a different trading engine or proprietary broker), then provide it via `app.WithFreqManager(...)` or your own `buildFreqManager` replacement.
-- Because the agent/plan scheduler components communicate only through the interface, you can reuse exit-plan logic, plan scheduler, Telegram notifications, and monitoring with a new executor without changing the AI or pipeline layers.
+- **Decoupled Logic**: Set `freqtrade.enabled` to `false` in `configs/config.yaml` to run only the AI analysis.
+- **Passive Control**: Brale issues `Force Entry` and `Force Exit` commands via the Freqtrade API. The Freqtrade-side strategy (`BraleSharedStrategy.py`) is intentionally passive.
+- **Exit Plan Synchronization**: Brale's `Plan Scheduler` calculates real-time exit points and triggers Freqtrade, allowing for AI-driven risk management far more flexible than native stop-losses.
 
 ## 🧩 Indicator System
 
-Brale uses `go-talib` to calculate multi-dimensional technical indicators, automatically adjusting based on configuration:
+Brale uses `go-talib` to calculate multi-dimensional technical indicators:
 
 - **Trend**: EMA (21/50/200), MACD (bullish/bearish/flat)
-- **Momentum**: RSI (overbought/oversold), ROC, Stochastic Oscillator, Williams %R
+- **Momentum**: RSI (overbought/oversold), ROC, Stochastic Oscillator
 - **Volatility**: ATR (for dynamic stop-loss or slippage estimation)
-- **Volume**: OBV (combined with ROC for volume-price resonance)
+- **Derivatives Data**: Open Interest (OI), Funding Rate (if supported by exchange).
 
 ## 🤝 Contributing
 
@@ -119,10 +186,3 @@ Issues and Pull Requests are welcome!
 ## 📄 License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## 🙏 Acknowledgments
-
-- [Freqtrade](https://github.com/freqtrade/freqtrade) - The leading open-source crypto trading bot
-- [NoFxAiOS/nofx](https://github.com/NoFxAiOS/nofx) - Inspiration for Multi-Agent decision prompting
-- [adshao/go-binance](https://github.com/adshao/go-binance) - Elegant Go Binance SDK
-- [go-talib](https://github.com/markcheno/go-talib) - Go Technical Analysis Library

@@ -8,19 +8,19 @@ import (
 	"strings"
 	"time"
 
+	"brale/internal/agent/ports"
 	"brale/internal/gateway/database"
-	"brale/internal/gateway/exchange"
 	"brale/internal/logger"
 	"brale/internal/strategy/exit"
 )
 
 type PlanExecutor struct {
 	repo            *PlanRepository
-	execManager     exchange.ExecutionManager
+	execManager     ports.ExecutionManager
 	onPlanTriggered func(ctx context.Context, tradeID int) // 触发后通知 scheduler 刷新
 }
 
-func NewPlanExecutor(repo *PlanRepository, execManager exchange.ExecutionManager, onTriggered func(ctx context.Context, tradeID int)) *PlanExecutor {
+func NewPlanExecutor(repo *PlanRepository, execManager ports.ExecutionManager, onTriggered func(ctx context.Context, tradeID int)) *PlanExecutor {
 	return &PlanExecutor{
 		repo:            repo,
 		execManager:     execManager,

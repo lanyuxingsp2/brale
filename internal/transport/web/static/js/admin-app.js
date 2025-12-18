@@ -1366,8 +1366,14 @@
       };
 
       const cleanUserPrompt = (text) => {
-        const cleaned = stripCsvBlocks(text || '');
-        return cleaned.trim().length ? cleaned : '—';
+        const compact = (input) => {
+          let out = (input || '').toString().replace(/\r\n/g, '\n');
+          out = out.replace(/[ \t]+\n/g, '\n');
+          out = out.replace(/\n{3,}/g, '\n\n');
+          return out.trim();
+        };
+        const cleaned = compact(stripCsvBlocks(text || ''));
+        return cleaned.length ? cleaned : '—';
       };
 
       const mergedAgentPrompt = (step) => {

@@ -5,31 +5,31 @@
 > *既然是演戏（交易），那就祝你 "Break a leg"（演出成功/大赚一笔）！*
 
 [![English Documentation](https://img.shields.io/badge/lang-English-blue.svg)](../README.md)
-[![Go Version](https://img.shields.io/github/go-mod/go-version/lauk/brale)](../go.mod)
+[![Go Version](https://img.shields.io/badge/go-1.24.0-blue.svg)](../go.mod)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](../LICENSE)
 
-**Brale** 是一个以 AI 决策为核心的量化策略生成器。它不直接持有账户资金，而是作为 "超级大脑"，利用多 Agent（技术指标、形态识别、趋势判断）协同分析市场，最终由 LLM (Large Language Model) 生成决策信号，并通过 [Freqtrade](https://github.com/freqtrade/freqtrade) 强大的执行引擎进行安全交易。[视频介绍](https://www.bilibili.com/video/BV1Ab2aB2EUY)
-
+**Brale** 是一个将 **“AI 的深度思考”** 与 **“量化的极致执行”** 完美解耦的量化交易系统。它通过多 Agent 协同分析（趋势、形态、动能），结合 LLM（GPT-4o, Claude 3.5, DeepSeek）生成高胜率决策，并由高度优化的执行引擎进行毫秒级风险对齐。
+[中文视频介绍](https://www.bilibili.com/video/BV1Ab2aB2EUY) 
 ## ✨ 核心特性
 
-- 🧠 **AI 驱动决策**: 摒弃传统的硬编码逻辑，利用 LLM 综合分析多维数据，像人类交易员一样思考。
-- 🤖 **多 Agent 协同**:
-  - **Technical Agent**: 计算 EMA, RSI, MACD, ATR 等硬指标。
-  - **Pattern Agent**: 识别 K 线形态（如头肩顶、吞没形态）。
-  - **Trend Agent**: 结合多周期 (Multi-timeframe) 判断大势。
-- 🛡️ **站在巨人的肩膀上**: 无缝集成 **Freqtrade**。本程序来控制下单，止盈止损点位，freqtrade负责和多交易所对接完成下单。
-- ⚡ **高性能**: 核心逻辑由 Go 编写，并发处理多币种数据拉取与指标计算。
-- 📊 **可视化与解释性**: 生成图表和自然语言分析报告，让你知道 AI 为什么开单。
+- 🧠 **双循环架构 (Dual-Loop)**:
+  - **慢速决策环 (Slow Loop)**: 由 K 线对齐调度器触发，利用大模型进行多维深度推理。
+  - **快速执行环 (Fast Loop)**: 由 `Plan Scheduler` 驱动，毫秒级价格监控，确保止盈止损（TP/SL）精准触发。
+- 🤖 **多 Agent 分布式推理**:
+  - **Indicator Agent**: 专注于 RSI, MACD, ATR 等数学指标的趋势共振。
+  - **Pattern Agent**: 识别价格行为（Price Action）、SMC 流动性区域和经典 K 线形态。
+  - **Trend Agent**: 屏蔽噪音，专注于多周期的大结构研判。
+- ⚙️ **高度可配置化**:
+  - **动态 Prompt 注入**: 支持为不同币种（如 BTC, ETH, SOL）配置独立的提示词库。
+  - **灵活策略库**: 通过 YAML 定义复杂的退出计划（分批止盈、动态 ATR 追踪止损）。
+- 🛡️ **被动执行模式 (Passive Executor)**: 无缝集成 **Freqtrade** 作为执行终端。Brale 掌握完全控制权，利用 Freqtrade 的稳定基础设施完成物理下单，消除策略层面的冗余。
+- ⚡ **高性能 Go 内核**: 并发处理多币种行情拉取、指标计算与 Agent 调度。
 
 ## 🏗️ 架构流程
 
 ![架构图](Reasoning-Edition.png)
 
-1.  **数据获取**: 从 Binance 等交易所拉取 K 线数据。
-2.  **分析**: 切分到多个时间周期，交由技术指标、价格形态、趋势判断等 Agent 协同分析。
-3.  **决策**: 汇总 Agent 结论，通过 Provider（如 LLM 模型）生成最终决策。
-4.  **执行**: 策略信号通过权重聚合后交由 Freqtrade 执行。
-
+```mermaid
 ## ⚠️ 风险免责声明
 
 **Brale 是一个用于量化交易研究和开发的开源工具，它并非金融投资建议。加密货币交易具有高度投机性，并伴随着巨大的风险。您可能会损失部分或全部投资资本。请勿投入您无法承受损失的资金。过往表现不代表未来业绩。使用 Brale 存在固有风险，请自行承担。**
@@ -47,15 +47,6 @@ cp configs/user_data/freqtrade-config.example.json configs/user_data/freqtrade-c
 # 1. 在 configs/config.yaml 中填入你的 LLM API Key
 # 2. 在 configs/user_data/freqtrade-config.json 中配置交易所 API（或使用 dry-run 模式）
 # 3. 根据你选择的模型修改 config.yaml / profiles.yaml 内的 [ai.multi_agent]、[ai.provider_preference] 和周期参数
-# 4. 修改 config.yaml 内的 [freqtrade.username] [freqtrade.password] 与 freqtrade-config.json 中 [api_server.username][api_server.password] 保持一致
-# 5. 如果需要开启 Telegram 推送，请填写 freqtrade-config.json 中的 [telegram.enabled] 以及 config.yaml 中的 [notify.telegram.enabled] 为 true 并填写相应的 token 和 chat_id
-```
-
-#### 1.1 代理访问 (Proxy)
-```bash
-# 1. 如果你使用代理，请确保打开 config.yaml 中的 [market.sources.proxy.enabled] 填写你的 HTTP 以及 SOCKS5 的链接。
-# 2. 请打开 docker-compose.yml 中的注释（freqtrade/brale 都需要），将 HTTP_PROXY 和 HTTPS_PROXY 修改为本地的端口。
-# 3. 请修改  freqtrade-config.json 中的 [exchange.ccxt_config.proxies] 和 [exchange.ccxt_async_config.aiohttp_proxy] 为本地的端口，可直接复制 config-proxy.json 中的字段，修改端口即可。
 ```
 
 ### 2. 启动服务
@@ -66,46 +57,22 @@ cp configs/user_data/freqtrade-config.example.json configs/user_data/freqtrade-c
 make start
 ```
 
-或者手动分步启动：
-
-```bash
-# 1. 准备数据目录和策略文件
-make prepare-dirs
-
-# 2. 启动 Freqtrade (需先行启动)
-BRALE_DATA_ROOT=running_log/brale_data FREQTRADE_USERDATA_ROOT=running_log/freqtrade_data docker compose up -d freqtrade
-
-# 3. 启动 Brale
-BRALE_DATA_ROOT=running_log/brale_data FREQTRADE_USERDATA_ROOT=running_log/freqtrade_data docker compose up -d brale
-```
-
-### 3. 验证运行
-
-```bash
-# 查看实时日志
-make logs
-
-# 服务健康检查
-curl http://localhost:9991/healthz
-```
-
 ## 🔌 执行层（可插拔）
 
-Brale 通过“执行器”抽象下发真实订单。默认实现是 [Freqtrade](https://github.com/freqtrade/freqtrade)，但核心逻辑与它解耦：
+Brale 通过 `Execution Engine` 抽象下发真实订单。默认实现是 [Freqtrade](https://github.com/freqtrade/freqtrade)，但核心逻辑与它解耦：
 
-- 在 `configs/config.yaml` 中把 `freqtrade.enabled` 设为 `false`，即可只运行 AI 策略和指标，或预备接入自研执行端。
-- 执行器接口定义在 `internal/gateway/freqtrade/executor.go`，包含仓位同步、计划事件、手动分批调整等能力。任意实现满足该接口即可接入。
-- 若要更换交易引擎，实现该接口（面向新的撮合系统 / 券商 API），并通过 `app.WithFreqManager(...)` 或替换 `buildFreqManager` 注入新执行器。
-- Agent、退出计划、Telegram 通知、监控面板都只依赖这个接口，因此切换执行端无需改 AI 或中间件流水线。
+- **解耦逻辑**: 在 `configs/config.yaml` 中把 `freqtrade.enabled` 设为 `false`，即可只运行 AI 策略和指标分析。
+- **被动控制**: Brale 通过 Freqtrade API 进行强制入场 (Force Entry) 和强制出场 (Force Exit)，Freqtrade 本身的策略文件 (`BraleSharedStrategy.py`) 保持为空，仅作为执行终端使用。
+- **退出计划同步**: Brale 的 `Plan Scheduler` 会实时计算止盈止损点位，并在触及时向 Freqtrade 发送平仓指令，实现比 Freqtrade 原生止损更灵活的 AI 逻辑。
 
 ## 🧩 指标体系
 
 Brale 基于 `go-talib` 计算多维技术指标，支持自动根据配置调整：
 
 - **趋势 (Trend)**: EMA (21/50/200), MACD (bullish/bearish/flat)
-- **动能 (Momentum)**: RSI (overbought/oversold), ROC, Stochastic Oscillator, Williams %R
+- **动能 (Momentum)**: RSI (overbought/oversold), ROC, Stochastic Oscillator
 - **波动率 (Volatility)**: ATR (用于动态止损或滑点估算)
-- **量价 (Volume)**: OBV (结合 ROC 判断量价共振)
+- **衍生品数据**: 持仓量 (OI)、资金费率 (Funding Rate) - 需交易所支持。
 
 ## 🤝 贡献指南
 

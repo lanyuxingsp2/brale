@@ -62,7 +62,6 @@ func (s *StandardStrategy) buildProfilePromptBundle(active map[string]*profile.R
 	if len(active) == 0 {
 		return bundle
 	}
-	systemBlocks := make([]string, 0, len(active))
 	userBlocks := make([]string, 0, len(active))
 
 	keys := make([]string, 0, len(active))
@@ -73,10 +72,6 @@ func (s *StandardStrategy) buildProfilePromptBundle(active map[string]*profile.R
 
 	for _, name := range keys {
 		rt := active[name]
-		if txt := strings.TrimSpace(rt.SystemPrompt); txt != "" {
-			header := fmt.Sprintf("### Profile %s (%s)\n", rt.Definition.Name, strings.ToUpper(rt.Definition.ContextTag))
-			systemBlocks = append(systemBlocks, header+txt)
-		}
 		if rt.UserTemplate != nil {
 			data := profilePromptData{
 				Profile:            rt.Definition.Name,
@@ -97,9 +92,6 @@ func (s *StandardStrategy) buildProfilePromptBundle(active map[string]*profile.R
 				userBlocks = append(userBlocks, block)
 			}
 		}
-	}
-	if len(systemBlocks) > 0 {
-		bundle.System = strings.Join(systemBlocks, "\n\n")
 	}
 	if len(userBlocks) > 0 {
 		bundle.User = strings.Join(userBlocks, "\n\n")
@@ -157,20 +149,20 @@ func (s *StandardStrategy) buildProfilePrompts(candidates []string, activeProfil
 
 		promptText := rt.UserPrompt
 		promptRef := strings.TrimSpace(rt.Definition.Prompts.User)
-		sysPrompt := strings.TrimSpace(rt.SystemPrompt)
+		sysPrompts := decision.CloneStringMap(rt.SystemPromptsByModel)
 		exitText, example := s.buildProfileExitDirective(rt, sym)
 		// 只有当所有字段均为空时才跳过
-		if sysPrompt == "" && strings.TrimSpace(promptText) == "" && strings.TrimSpace(exitText) == "" && strings.TrimSpace(example) == "" {
+		if len(sysPrompts) == 0 && strings.TrimSpace(promptText) == "" && strings.TrimSpace(exitText) == "" && strings.TrimSpace(example) == "" {
 			continue
 		}
 		prompts[sym] = decision.ProfilePromptSpec{
-			Profile:         rt.Definition.Name,
-			ContextTag:      rt.Definition.ContextTag,
-			PromptRef:       promptRef,
-			SystemPrompt:    sysPrompt,
-			UserPrompt:      promptText,
-			ExitConstraints: exitText,
-			Example:         example,
+			Profile:              rt.Definition.Name,
+			ContextTag:           rt.Definition.ContextTag,
+			PromptRef:            promptRef,
+			SystemPromptsByModel: sysPrompts,
+			UserPrompt:           promptText,
+			ExitConstraints:      exitText,
+			Example:              example,
 		}
 	}
 	return prompts

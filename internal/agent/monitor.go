@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"brale/internal/agent/ports"
 	"brale/internal/gateway/exchange"
 	"brale/internal/gateway/notifier"
 	"brale/internal/logger"
@@ -26,7 +27,7 @@ type MonitorParams struct {
 	HorizonSummary string
 	WarmupSummary  string
 	Telegram       *notifier.Telegram
-	ExecManager    exchange.ExecutionManager
+	ExecManager    ports.ExecutionManager
 	Observer       PriceObserver
 }
 
@@ -38,7 +39,7 @@ type PriceMonitor struct {
 	horizonSummary string
 	warmupSummary  string
 	tg             *notifier.Telegram
-	execManager    exchange.ExecutionManager
+	execManager    ports.ExecutionManager
 	observer       PriceObserver
 
 	priceCache   map[string]cachedQuote

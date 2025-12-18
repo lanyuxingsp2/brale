@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"brale/internal/agent/interfaces"
+	"brale/internal/agent/ports"
 	"brale/internal/decision"
 	"brale/internal/gateway/exchange"
 	"brale/internal/logger"
@@ -13,11 +14,11 @@ import (
 
 // Service implements interfaces.PositionService.
 type Service struct {
-	manager exchange.ExecutionManager
+	manager ports.ExecutionManager
 }
 
 // NewService creates a new PositionService.
-func NewService(manager exchange.ExecutionManager) *Service {
+func NewService(manager ports.ExecutionManager) *Service {
 	return &Service{
 		manager: manager,
 	}

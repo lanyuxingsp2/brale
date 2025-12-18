@@ -11,6 +11,7 @@ import (
 	brcfg "brale/internal/config"
 	"brale/internal/decision/render"
 	"brale/internal/exitplan"
+	"brale/internal/gateway/notifier"
 	"brale/internal/gateway/provider"
 	"brale/internal/logger"
 	"brale/internal/market"
@@ -23,11 +24,6 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-// TextNotifier 定义最小化的通知接口，便于注入 Telegram 等实现。
-type TextNotifier interface {
-	SendText(text string) error
-}
-
 // 中文说明：
 // LegacyEngineAdapter：沿用“旧版思路”的提示词结构（System 模板 + User 数据摘要），
 // 但底层通过 ModelProvider 调用，并用 JSON 数组解析为决策结果；
@@ -37,7 +33,7 @@ type LegacyEngineAdapter struct {
 	Providers     []provider.ModelProvider
 	Agg           Aggregator
 	Observer      DecisionObserver
-	AgentNotifier TextNotifier
+	AgentNotifier notifier.TextNotifier
 	AgentHistory  AgentOutputHistory
 
 	PromptMgr      *strategy.Manager // 提示词管理器
@@ -94,8 +90,6 @@ func (e *LegacyEngineAdapter) Decide(ctx context.Context, input Context) (Decisi
 			input.Analysis = CloneSlice(grouped[sym])
 			// 过滤 ProfilePrompts，只保留当前 symbol 的配置
 			input.ProfilePrompts = filterProfilePrompts(input.ProfilePrompts, sym)
-			// 替换 Prompt.System 为该 symbol 对应 profile 的 system prompt
-			input.Prompt.System = extractSystemPromptForSymbol(input.ProfilePrompts, sym)
 			// 过滤 Positions，只保留当前 symbol 的持仓
 			input.Positions = filterPositions(input.Positions, input.Candidates)
 		}
@@ -114,8 +108,6 @@ func (e *LegacyEngineAdapter) Decide(ctx context.Context, input Context) (Decisi
 		symInput.Analysis = CloneSlice(grouped[sym])
 		// 过滤 ProfilePrompts，只保留当前 symbol 的配置，避免输出其他 symbol 的约束
 		symInput.ProfilePrompts = filterProfilePrompts(input.ProfilePrompts, sym)
-		// 替换 Prompt.System 为该 symbol 对应 profile 的 system prompt
-		symInput.Prompt.System = extractSystemPromptForSymbol(input.ProfilePrompts, sym)
 		// 清空 Prompt.User，避免追加所有 profiles 的 user template（已通过 ProfilePrompts 处理）
 		symInput.Prompt.User = ""
 
@@ -152,7 +144,7 @@ func (e *LegacyEngineAdapter) Decide(ctx context.Context, input Context) (Decisi
 
 func (e *LegacyEngineAdapter) decideSingle(ctx context.Context, input Context, applyDelay bool) (DecisionResult, error) {
 	insights := e.runMultiAgents(ctx, input)
-	sys, usr := e.ComposePrompts(ctx, input, insights)
+	baseSys, usr := e.ComposePrompts(ctx, input, insights)
 	visionPayloads := e.collectVisionPayloads(input.Analysis)
 
 	if applyDelay {
@@ -160,6 +152,10 @@ func (e *LegacyEngineAdapter) decideSingle(ctx context.Context, input Context, a
 	}
 
 	outs := e.collectModelOutputs(ctx, func(c context.Context, p provider.ModelProvider) ModelOutput {
+		sys, err := resolveSystemPromptForFinalModel(input.ProfilePrompts, input.Candidates, p.ID())
+		if err != nil {
+			return ModelOutput{ProviderID: p.ID(), Err: err}
+		}
 		return e.callProvider(c, p, sys, usr, visionPayloads)
 	})
 
@@ -185,9 +181,13 @@ func (e *LegacyEngineAdapter) decideSingle(ctx context.Context, input Context, a
 
 	traceID := uuid.NewString()
 	if e.Observer != nil {
+		bestSys := baseSys
+		if resolved, err := resolveSystemPromptForFinalModel(input.ProfilePrompts, input.Candidates, best.ProviderID); err == nil && strings.TrimSpace(resolved) != "" {
+			bestSys = resolved
+		}
 		e.Observer.AfterDecide(ctx, DecisionTrace{
 			TraceID:       traceID,
-			SystemPrompt:  sys,
+			SystemPrompt:  bestSys,
 			UserPrompt:    usr,
 			Outputs:       cloneOutputs(outs),
 			Best:          best,
@@ -612,21 +612,35 @@ func filterProfilePrompts(prompts map[string]ProfilePromptSpec, targetSymbol str
 	return result
 }
 
-// extractSystemPromptForSymbol 从 ProfilePrompts 中提取指定 symbol 对应的 system prompt
-func extractSystemPromptForSymbol(prompts map[string]ProfilePromptSpec, targetSymbol string) string {
+func resolveSystemPromptForFinalModel(prompts map[string]ProfilePromptSpec, candidates []string, modelID string) (string, error) {
 	if len(prompts) == 0 {
-		return ""
+		return "", fmt.Errorf("profile prompts 为空，无法解析 system prompt")
 	}
-	targetNorm := normalizeSymbol(targetSymbol)
-	if targetNorm == "" {
-		return ""
+	if len(candidates) != 1 {
+		return "", fmt.Errorf("final decision 仅支持单币种 system prompt 解析（当前 candidates=%d）", len(candidates))
+	}
+	symbol := normalizeSymbol(candidates[0])
+	if symbol == "" {
+		return "", fmt.Errorf("symbol 为空，无法解析 system prompt")
+	}
+	modelID = strings.TrimSpace(modelID)
+	if modelID == "" {
+		return "", fmt.Errorf("model id 为空，无法解析 system prompt")
 	}
 	for sym, spec := range prompts {
-		if normalizeSymbol(sym) == targetNorm {
-			return strings.TrimSpace(spec.SystemPrompt)
+		if normalizeSymbol(sym) != symbol {
+			continue
 		}
+		if len(spec.SystemPromptsByModel) == 0 {
+			return "", fmt.Errorf("symbol=%s 未配置 prompts.system_by_model", symbol)
+		}
+		sys := strings.TrimSpace(spec.SystemPromptsByModel[modelID])
+		if sys == "" {
+			return "", fmt.Errorf("symbol=%s 缺少 system prompt 配置 model=%s", symbol, modelID)
+		}
+		return sys, nil
 	}
-	return ""
+	return "", fmt.Errorf("未找到 symbol=%s 对应的 profile prompts", symbol)
 }
 
 // filterPositions 过滤持仓列表，只保留 candidates 中包含的 symbol

@@ -13,7 +13,7 @@ import (
 	livehttp "brale/internal/transport/http/live"
 )
 
-func buildFreqManager(cfg brcfg.FreqtradeConfig, horizon string, logStore *database.DecisionLogStore, liveStore database.LivePositionStore, newStore store.Store, notifier freqexec.TextNotifier) (*freqexec.Manager, error) {
+func buildFreqManager(cfg brcfg.FreqtradeConfig, horizon string, logStore *database.DecisionLogStore, liveStore database.LivePositionStore, newStore store.Store, textNotifier notifier.TextNotifier) (*freqexec.Manager, error) {
 	if !cfg.Enabled {
 		return nil, nil
 	}
@@ -25,7 +25,7 @@ func buildFreqManager(cfg brcfg.FreqtradeConfig, horizon string, logStore *datab
 
 	// Adapter now resides in gateway/freqtrade
 	adapter := freqexec.NewAdapter(client, &cfg)
-	manager, err := freqexec.NewManager(client, cfg, logStore, liveStore, newStore, notifier, adapter)
+	manager, err := freqexec.NewManager(client, cfg, logStore, liveStore, newStore, textNotifier, adapter)
 	if err != nil {
 		return nil, fmt.Errorf("failed to init freqtrade manager: %w", err)
 	}

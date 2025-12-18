@@ -9,10 +9,12 @@ import (
 	"time"
 
 	"brale/internal/agent/interfaces"
+	"brale/internal/agent/ports"
 	"brale/internal/decision"
 	"brale/internal/exitplan"
 	"brale/internal/gateway/database"
 	"brale/internal/gateway/exchange"
+	"brale/internal/gateway/notifier"
 	"brale/internal/logger"
 	"brale/internal/pkg/utils"
 	"brale/internal/strategy/exit"
@@ -31,14 +33,10 @@ type PlanSchedulerParams struct {
 	Store           exit.StrategyStore
 	Plans           *exitplan.Registry
 	Handlers        *exit.HandlerRegistry
-	ExecManager     exchange.ExecutionManager
-	Notifier        TextNotifier
+	ExecManager     ports.ExecutionManager
+	Notifier        notifier.TextNotifier
 	RefreshInterval time.Duration
 	DisableDebounce bool // For tests: disable price debounce
-}
-
-type TextNotifier interface {
-	SendText(text string) error
 }
 
 var _ exchange.PlanUpdateHook = (*PlanScheduler)(nil)
@@ -47,8 +45,8 @@ var _ exchange.PlanUpdateHook = (*PlanScheduler)(nil)
 type PlanScheduler struct {
 	repo        *PlanRepository
 	executor    *PlanExecutor
-	execManager exchange.ExecutionManager
-	notifier    TextNotifier
+	execManager ports.ExecutionManager
+	notifier    notifier.TextNotifier
 
 	interval        time.Duration
 	startOnce       sync.Once

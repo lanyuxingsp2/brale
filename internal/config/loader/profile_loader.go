@@ -16,20 +16,20 @@ import (
 
 // ProfileDefinition 描述单个分析 Profile，在 V2 中用于绑定中间件链与 Prompt。
 type ProfileDefinition struct {
-	Name          string             `mapstructure:"-"`
-	ContextTag    string             `mapstructure:"context_tag"`
-	Targets       []string           `mapstructure:"targets"`
-	Intervals     []string           `mapstructure:"intervals"`
+	Name       string   `mapstructure:"-"`
+	ContextTag string   `mapstructure:"context_tag"`
+	Targets    []string `mapstructure:"targets"`
+	Intervals  []string `mapstructure:"intervals"`
 	// DecisionIntervalMultiple 表示该 profile(币种) 决策间隔 = 最短K线周期 * 倍数。
 	// 默认 1。
-	DecisionIntervalMultiple int `mapstructure:"decision_interval_multiple"`
-	AnalysisSlice int                `mapstructure:"analysis_slice"`
-	SliceDropTail int                `mapstructure:"slice_drop_tail"`
-	Middlewares   []MiddlewareConfig `mapstructure:"middlewares"`
-	Prompts       PromptRefs         `mapstructure:"prompts"`
-	ExitPlans     ExitPlanBinding    `mapstructure:"exit_plans"`
-	Derivatives   DerivativesConfig  `mapstructure:"derivatives"`
-	Default       bool               `mapstructure:"default"`
+	DecisionIntervalMultiple int                `mapstructure:"decision_interval_multiple"`
+	AnalysisSlice            int                `mapstructure:"analysis_slice"`
+	SliceDropTail            int                `mapstructure:"slice_drop_tail"`
+	Middlewares              []MiddlewareConfig `mapstructure:"middlewares"`
+	Prompts                  PromptRefs         `mapstructure:"prompts"`
+	ExitPlans                ExitPlanBinding    `mapstructure:"exit_plans"`
+	Derivatives              DerivativesConfig  `mapstructure:"derivatives"`
+	Default                  bool               `mapstructure:"default"`
 
 	// 归一化后的字段（避免运行期重复处理）
 	targetsUpper   []string
@@ -42,8 +42,10 @@ func (d ProfileDefinition) ExitPlanCombos() []string {
 
 // PromptRefs 指定 system/user 模板路径。
 type PromptRefs struct {
-	System string `mapstructure:"system"`
-	User   string `mapstructure:"user"`
+	// SystemByModel 指定每个最终决策模型所使用的 system prompt。
+	// Key 必须精确匹配 ai.models[].id。
+	SystemByModel map[string]string `mapstructure:"system_by_model"`
+	User          string            `mapstructure:"user"`
 }
 
 const defaultExitPlanID = "plan_combo_main"
