@@ -176,12 +176,31 @@ func (h *trailingStopHandler) OnPrice(ctx context.Context, inst exit.PlanInstanc
 }
 
 func (h *trailingStopHandler) OnAdjust(ctx context.Context, inst exit.PlanInstance, params map[string]any) (*exit.PlanEvent, error) {
-	if len(params) == 0 {
+	adj, ok := h.buildTrailingAdjustParams(inst, params)
+	if !ok {
 		return nil, nil
 	}
 	state, err := exit.DecodeTierPlanState(inst.Record.StateJSON)
 	if err != nil {
 		return nil, fmt.Errorf("trailing_stop_pct: 解析状态失败: %w", err)
+	}
+
+	nextTriggerPct, nextTrailPct, triggerChanged, trailChanged := readTrailingAdjust(state, adj)
+	if !triggerChanged && !trailChanged {
+		return nil, nil
+	}
+	if err := validateTrailingPctParams(nextTriggerPct, nextTrailPct); err != nil {
+		return nil, fmt.Errorf("trailing_stop_pct: %w", err)
+	}
+
+	applyTrailingAdjust(&state, nextTriggerPct, nextTrailPct, triggerChanged, trailChanged)
+	state.LastUpdatedAt = time.Now().Unix()
+	return buildAdjustEvent(inst, state)
+}
+
+func (h *trailingStopHandler) buildTrailingAdjustParams(inst exit.PlanInstance, params map[string]any) (map[string]any, bool) {
+	if len(params) == 0 {
+		return nil, false
 	}
 	mapped := cloneMap(params)
 	if pct, ok := h.maybeConvertMultiplier(inst, mapped, "trigger_multiplier"); ok {
@@ -190,52 +209,42 @@ func (h *trailingStopHandler) OnAdjust(ctx context.Context, inst exit.PlanInstan
 	if pct, ok := h.maybeConvertMultiplier(inst, mapped, "trail_multiplier"); ok {
 		mapped["trail_pct"] = pct
 	}
+	return mapped, true
+}
 
+func readTrailingAdjust(state exit.TierPlanState, params map[string]any) (float64, float64, bool, bool) {
 	nextTriggerPct := state.TriggerPct
 	nextTrailPct := state.TrailPct
 	triggerChanged := false
 	trailChanged := false
-
-	if pct, ok := number(mapped["trigger_pct"]); ok && pct > 0 {
+	if pct, ok := number(params["trigger_pct"]); ok && pct > 0 {
 		nextTriggerPct = pct
 		triggerChanged = true
 	}
-	if pct, ok := number(mapped["trail_pct"]); ok && pct > 0 {
+	if pct, ok := number(params["trail_pct"]); ok && pct > 0 {
 		nextTrailPct = pct
 		trailChanged = true
 	}
-	if !triggerChanged && !trailChanged {
-		return nil, nil
-	}
+	return nextTriggerPct, nextTrailPct, triggerChanged, trailChanged
+}
 
-	if nextTrailPct >= nextTriggerPct {
-		return nil, fmt.Errorf("trailing_stop_pct: trail_pct 需小于 trigger_pct")
+func applyTrailingAdjust(state *exit.TierPlanState, triggerPct, trailPct float64, triggerChanged, trailChanged bool) {
+	if state == nil {
+		return
 	}
-	if nextTriggerPct > 0.25 {
-		return nil, fmt.Errorf("trailing_stop_pct: trigger_pct 不能超过 25%%，当前=%.2f%%", nextTriggerPct*100)
-	}
-	if nextTriggerPct < 0.005 {
-		return nil, fmt.Errorf("trailing_stop_pct: trigger_pct 至少 0.5%%，当前=%.2f%%", nextTriggerPct*100)
-	}
-	if nextTrailPct < 0.002 {
-		return nil, fmt.Errorf("trailing_stop_pct: trail_pct 至少 0.2%%，当前=%.2f%%", nextTrailPct*100)
-	}
-
-	state.TriggerPct = nextTriggerPct
-	state.TrailPct = nextTrailPct
+	state.TriggerPct = triggerPct
+	state.TrailPct = trailPct
 	if triggerChanged {
-		state.TrailingActivationPrice = relativeTarget(state.EntryPrice, nextTriggerPct, state.Side)
+		state.TrailingActivationPrice = relativeTarget(state.EntryPrice, triggerPct, state.Side)
 	}
 	if trailChanged && state.TrailingActive {
 		anchor := state.TrailingPeakPrice
 		if strings.EqualFold(state.Side, "short") {
 			anchor = state.TrailingTroughPrice
 		}
-		state.TrailingStopPrice = trailingStopFor(state.Side, anchor, nextTrailPct)
+		state.TrailingStopPrice = trailingStopFor(state.Side, anchor, trailPct)
 		state.StopLossPrice = state.TrailingStopPrice
 	}
-	state.LastUpdatedAt = time.Now().Unix()
-	return buildAdjustEvent(inst, state)
 }
 
 func buildAdjustEvent(inst exit.PlanInstance, state exit.TierPlanState) (*exit.PlanEvent, error) {
@@ -253,15 +262,26 @@ func buildAdjustEvent(inst exit.PlanInstance, state exit.TierPlanState) (*exit.P
 }
 
 func (h *trailingStopHandler) resolveTrailingPercents(entry float64, params map[string]any) (float64, float64, float64, error) {
+	if triggerPct, trailPct, initialStopPct, ok, err := resolveTrailingPercentsFromPct(params); ok || err != nil {
+		return triggerPct, trailPct, initialStopPct, err
+	}
+	return resolveTrailingPercentsFromATR(entry, params)
+}
+
+func resolveTrailingPercentsFromPct(params map[string]any) (float64, float64, float64, bool, error) {
 	triggerPct, okTrig := number(params["trigger_pct"])
 	trailPct, okTrail := number(params["trail_pct"])
 	initialStopPct, _ := number(params["initial_stop_pct"])
-	if okTrig && okTrail && triggerPct > 0 && trailPct > 0 {
-		if err := validateTrailingPctParams(triggerPct, trailPct); err != nil {
-			return 0, 0, 0, fmt.Errorf("trailing_stop_pct: %w", err)
-		}
-		return triggerPct, trailPct, initialStopPct, nil
+	if !okTrig || !okTrail || triggerPct <= 0 || trailPct <= 0 {
+		return 0, 0, 0, false, nil
 	}
+	if err := validateTrailingPctParams(triggerPct, trailPct); err != nil {
+		return 0, 0, 0, true, fmt.Errorf("trailing_stop_pct: %w", err)
+	}
+	return triggerPct, trailPct, initialStopPct, true, nil
+}
+
+func resolveTrailingPercentsFromATR(entry float64, params map[string]any) (float64, float64, float64, error) {
 	atrVal, okATR := number(params["atr_value"])
 	triggerMul, okTrigMul := number(params["trigger_multiplier"])
 	trailMul, okTrailMul := number(params["trail_multiplier"])
@@ -271,14 +291,18 @@ func (h *trailingStopHandler) resolveTrailingPercents(entry float64, params map[
 	if entry <= 0 {
 		return 0, 0, 0, fmt.Errorf("trailing_stop_pct: entry_price 必填以计算 ATR 百分比")
 	}
-	triggerPct = (atrVal * triggerMul) / entry
-	trailPct = (atrVal * trailMul) / entry
+	triggerPct := (atrVal * triggerMul) / entry
+	trailPct := (atrVal * trailMul) / entry
 	if triggerPct <= 0 || trailPct <= 0 {
 		return 0, 0, 0, fmt.Errorf("trailing_stop_pct: 根据 ATR 计算的 trigger_pct/trail_pct 无效")
 	}
 	if trailPct >= triggerPct {
 		return 0, 0, 0, fmt.Errorf("trailing_stop_pct: trail_multiplier 需小于 trigger_multiplier")
 	}
+	if err := validateTrailingPctParams(triggerPct, trailPct); err != nil {
+		return 0, 0, 0, fmt.Errorf("trailing_stop_pct: %w", err)
+	}
+	initialStopPct := 0.0
 	if initMul, ok := number(params["initial_stop_multiplier"]); ok && initMul > 0 {
 		initialStopPct = (atrVal * initMul) / entry
 	}

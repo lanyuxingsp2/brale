@@ -83,72 +83,19 @@ func (r *Router) handleLiveDecisions(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "实时日志未启用"})
 		return
 	}
-	pageParam := strings.TrimSpace(c.Query("page"))
-	page, _ := strconv.Atoi(pageParam)
-	if page < 0 {
-		page = 0
-	}
-	pageSize, _ := strconv.Atoi(c.DefaultQuery("pageSize", "0"))
-	if pageSize <= 0 {
-		pageSize, _ = strconv.Atoi(c.DefaultQuery("page_size", "0"))
-	}
-	if pageSize <= 0 {
-		pageSize, _ = strconv.Atoi(c.DefaultQuery("limit", "100"))
-	}
-	if pageSize <= 0 {
-		pageSize = 100
-	}
-	if pageSize > 500 {
-		pageSize = 500
-	}
-	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
-	if offset < 0 {
-		offset = 0
-	}
-	if page > 0 {
-		offset = (page - 1) * pageSize
-	} else {
-		page = offset/pageSize + 1
-	}
-	query := database.LiveDecisionQuery{
-		Limit:    pageSize,
-		Offset:   offset,
-		Provider: c.Query("provider"),
-		Stage:    c.DefaultQuery("stage", "core"),
-		Symbol:   c.Query("symbol"),
-		Symbols:  c.QueryArray("symbol"),
-	}
+	page, pageSize, offset := parsePagination(c)
+	query := buildLiveDecisionQuery(c, pageSize, offset)
 
 	reqCtx := c.Request.Context()
-
-	listCtx, cancelList := context.WithTimeout(reqCtx, 10*time.Second)
-	logs, err := r.Logs.ListDecisions(listCtx, query)
-	cancelList()
+	logs, err := r.fetchLiveDecisions(reqCtx, query)
 	if err != nil {
 		logger.Errorf("[api] live decisions list failed ip=%s err=%v", c.ClientIP(), err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	includeCount := parseBoolDefaultTrue(c.DefaultQuery("include_count", "1"))
-
-	if includeCount && query.Offset == 0 && query.Limit > 0 && query.Limit <= 20 && strings.EqualFold(strings.TrimSpace(query.Stage), "final") {
-		if len(query.Symbols) > 0 || strings.TrimSpace(query.Symbol) != "" {
-			includeCount = false
-		}
-	}
-	total := -1
-	if includeCount {
-		countCtx, cancelCount := context.WithTimeout(reqCtx, 800*time.Millisecond)
-		count, err := r.Logs.CountDecisions(countCtx, query)
-		cancelCount()
-		if err != nil {
-
-			logger.Warnf("[api] live decisions count failed ip=%s err=%v", c.ClientIP(), err)
-		} else {
-			total = count
-		}
-	}
+	includeCount := shouldIncludeCount(c, query)
+	total := r.maybeCountDecisions(reqCtx, query, includeCount, c.ClientIP())
 
 	traces := database.BuildLiveDecisionTraces(logs)
 	logger.Debugf("[api] live decisions ip=%s page=%d size=%d symbol=%s provider=%s total=%d", c.ClientIP(), page, pageSize, query.Symbol, query.Provider, total)
@@ -159,6 +106,94 @@ func (r *Router) handleLiveDecisions(c *gin.Context) {
 		"page":        page,
 		"page_size":   pageSize,
 	})
+}
+
+func parsePagination(c *gin.Context) (int, int, int) {
+	pageParam := strings.TrimSpace(c.Query("page"))
+	page, _ := strconv.Atoi(pageParam)
+	if page < 0 {
+		page = 0
+	}
+	pageSize := parsePageSize(c)
+	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+	if offset < 0 {
+		offset = 0
+	}
+	if page > 0 {
+		offset = (page - 1) * pageSize
+	} else {
+		page = offset/pageSize + 1
+	}
+	return page, pageSize, offset
+}
+
+func parsePageSize(c *gin.Context) int {
+	candidates := []string{"pageSize", "page_size", "limit"}
+	for _, key := range candidates {
+		if val, _ := strconv.Atoi(c.DefaultQuery(key, "0")); val > 0 {
+			return clampPageSize(val)
+		}
+	}
+	return clampPageSize(100)
+}
+
+func clampPageSize(val int) int {
+	switch {
+	case val <= 0:
+		return 100
+	case val > 500:
+		return 500
+	default:
+		return val
+	}
+}
+
+func buildLiveDecisionQuery(c *gin.Context, pageSize, offset int) database.LiveDecisionQuery {
+	return database.LiveDecisionQuery{
+		Limit:    pageSize,
+		Offset:   offset,
+		Provider: c.Query("provider"),
+		Stage:    c.DefaultQuery("stage", "core"),
+		Symbol:   c.Query("symbol"),
+		Symbols:  c.QueryArray("symbol"),
+	}
+}
+
+func (r *Router) fetchLiveDecisions(ctx context.Context, query database.LiveDecisionQuery) ([]database.DecisionLogRecord, error) {
+	listCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	return r.Logs.ListDecisions(listCtx, query)
+}
+
+func shouldIncludeCount(c *gin.Context, query database.LiveDecisionQuery) bool {
+	includeCount := parseBoolDefaultTrue(c.DefaultQuery("include_count", "1"))
+	if !includeCount {
+		return false
+	}
+	if query.Offset != 0 || query.Limit <= 0 || query.Limit > 20 {
+		return includeCount
+	}
+	if !strings.EqualFold(strings.TrimSpace(query.Stage), "final") {
+		return includeCount
+	}
+	if len(query.Symbols) > 0 || strings.TrimSpace(query.Symbol) != "" {
+		return false
+	}
+	return includeCount
+}
+
+func (r *Router) maybeCountDecisions(ctx context.Context, query database.LiveDecisionQuery, include bool, clientIP string) int {
+	if !include {
+		return -1
+	}
+	countCtx, cancel := context.WithTimeout(ctx, 800*time.Millisecond)
+	defer cancel()
+	count, err := r.Logs.CountDecisions(countCtx, query)
+	if err != nil {
+		logger.Warnf("[api] live decisions count failed ip=%s err=%v", clientIP, err)
+		return -1
+	}
+	return count
 }
 
 func (r *Router) handleDecisionByID(c *gin.Context) {

@@ -27,6 +27,12 @@ const (
 	defaultPlanRefreshInterval = 5 * time.Second
 	planPriceBufferSize        = 1024
 	priceDebounceInterval      = 1 * time.Second
+
+	defaultStrategyPendingTimeout      = 12 * time.Minute
+	defaultStrategyPendingSweepInterval = 1 * time.Minute
+
+	defaultInactiveTradeSweepInterval = 10 * time.Second
+	defaultInactiveTradeMissThreshold = 2
 )
 
 type PlanSchedulerParams struct {
@@ -36,6 +42,8 @@ type PlanSchedulerParams struct {
 	ExecManager     ports.ExecutionManager
 	Notifier        notifier.TextNotifier
 	RefreshInterval time.Duration
+	PendingTimeout  time.Duration
+	PendingSweep    time.Duration
 	DisableDebounce bool
 }
 
@@ -59,11 +67,14 @@ type PlanScheduler struct {
 	notifier    notifier.TextNotifier
 
 	interval        time.Duration
+	pendingTimeout  time.Duration
+	pendingSweep    time.Duration
 	startOnce       sync.Once
 	priceCh         chan priceTick
 	mu              sync.RWMutex
 	symbolIndex     map[string][]*planWatcher
 	tradeIndex      map[int][]*planWatcher
+	pruneMisses     map[int]int
 	disableDebounce bool
 
 	lastPriceMu   sync.Mutex
@@ -83,15 +94,26 @@ func NewPlanScheduler(params PlanSchedulerParams) *PlanScheduler {
 	if interval <= 0 {
 		interval = defaultPlanRefreshInterval
 	}
+	pendingTimeout := params.PendingTimeout
+	if pendingTimeout <= 0 {
+		pendingTimeout = defaultStrategyPendingTimeout
+	}
+	pendingSweep := params.PendingSweep
+	if pendingSweep <= 0 {
+		pendingSweep = defaultStrategyPendingSweepInterval
+	}
 	repo := NewPlanRepository(params.Store, params.Plans, params.Handlers)
 	s := &PlanScheduler{
 		repo:            repo,
 		execManager:     params.ExecManager,
 		notifier:        params.Notifier,
 		interval:        interval,
+		pendingTimeout:  pendingTimeout,
+		pendingSweep:    pendingSweep,
 		priceCh:         make(chan priceTick, planPriceBufferSize),
 		symbolIndex:     make(map[string][]*planWatcher),
 		tradeIndex:      make(map[int][]*planWatcher),
+		pruneMisses:     make(map[int]int),
 		lastPriceTime:   make(map[string]time.Time),
 		disableDebounce: params.DisableDebounce,
 	}
@@ -106,6 +128,8 @@ func (s *PlanScheduler) Start(ctx context.Context) {
 	}
 	s.startOnce.Do(func() {
 		go s.refreshLoop(ctx)
+		go s.pendingLoop(ctx)
+		go s.pruneLoop(ctx)
 		go s.priceLoop(ctx)
 	})
 }
@@ -143,6 +167,240 @@ func (s *PlanScheduler) refreshLoop(ctx context.Context) {
 
 	s.rebuild(ctx)
 	<-ctx.Done()
+}
+
+func (s *PlanScheduler) pruneLoop(ctx context.Context) {
+	if s == nil {
+		return
+	}
+	interval := s.interval
+	if interval <= 0 {
+		interval = defaultInactiveTradeSweepInterval
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.pruneInactiveTrades(ctx, defaultInactiveTradeMissThreshold)
+		}
+	}
+}
+
+func (s *PlanScheduler) pruneInactiveTrades(ctx context.Context, missThreshold int) {
+	if s == nil || s.repo == nil {
+		return
+	}
+	ctx = ensureContext(ctx)
+	missThreshold = normalizeMissThreshold(missThreshold)
+
+	active, ok := s.loadActiveTradeSet(ctx)
+	if !ok {
+		return
+	}
+
+	missingActive := s.pruneInactiveLocked(active, missThreshold)
+	for _, id := range missingActive {
+		s.rebuildTrade(ctx, id)
+	}
+}
+
+func ensureContext(ctx context.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+	return ctx
+}
+
+func normalizeMissThreshold(v int) int {
+	if v <= 0 {
+		return defaultInactiveTradeMissThreshold
+	}
+	return v
+}
+
+func (s *PlanScheduler) loadActiveTradeSet(ctx context.Context) (map[int]struct{}, bool) {
+	activeIDs, err := s.repo.ActiveTradeIDs(ctx)
+	if err != nil {
+		logger.Warnf("PlanScheduler: 查询活跃策略失败(prune): %v", err)
+		return nil, false
+	}
+	active := make(map[int]struct{}, len(activeIDs))
+	for _, id := range activeIDs {
+		if id > 0 {
+			active[id] = struct{}{}
+		}
+	}
+	return active, true
+}
+
+func (s *PlanScheduler) pruneInactiveLocked(active map[int]struct{}, missThreshold int) []int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.pruneMisses == nil {
+		s.pruneMisses = make(map[int]int)
+	}
+
+	if s.tradeIndex == nil || len(s.tradeIndex) == 0 {
+		if len(s.pruneMisses) > 0 {
+			s.pruneMisses = make(map[int]int)
+		}
+		return keysOfActive(active)
+	}
+
+	for tradeID := range s.tradeIndex {
+		if _, ok := active[tradeID]; ok {
+			delete(s.pruneMisses, tradeID)
+			continue
+		}
+		next := s.pruneMisses[tradeID] + 1
+		if next >= missThreshold {
+			s.removeTradeLocked(tradeID)
+			delete(s.pruneMisses, tradeID)
+			logger.Infof("PlanScheduler: prune inactive trade watchers trade=%d", tradeID)
+			continue
+		}
+		s.pruneMisses[tradeID] = next
+	}
+
+	for tradeID := range s.pruneMisses {
+		if _, ok := s.tradeIndex[tradeID]; !ok {
+			delete(s.pruneMisses, tradeID)
+		}
+	}
+
+	return missingActiveTrades(active, s.tradeIndex)
+}
+
+func keysOfActive(active map[int]struct{}) []int {
+	if len(active) == 0 {
+		return nil
+	}
+	out := make([]int, 0, len(active))
+	for id := range active {
+		out = append(out, id)
+	}
+	return out
+}
+
+func missingActiveTrades(active map[int]struct{}, tradeIndex map[int][]*planWatcher) []int {
+	if len(active) == 0 {
+		return nil
+	}
+	var out []int
+	for id := range active {
+		if _, ok := tradeIndex[id]; !ok {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+func (s *PlanScheduler) pendingLoop(ctx context.Context) {
+	if s == nil {
+		return
+	}
+	interval := s.pendingSweep
+	if interval <= 0 {
+		interval = defaultStrategyPendingSweepInterval
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.clearStalePending(ctx)
+		}
+	}
+}
+
+func (s *PlanScheduler) clearStalePending(ctx context.Context) {
+	if s == nil || s.repo == nil || s.pendingTimeout <= 0 {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ids, err := s.repo.ActiveTradeIDs(ctx)
+	if err != nil {
+		logger.Warnf("PlanScheduler: 查询活跃策略失败(pending sweep): %v", err)
+		return
+	}
+	now := time.Now()
+	var dirtyTrades []int
+	for _, tradeID := range ids {
+		recs, err := s.repo.ListStrategyInstances(ctx, tradeID)
+		if err != nil {
+			logger.Warnf("PlanScheduler: pending sweep 读取策略实例失败 trade=%d err=%v", tradeID, err)
+			continue
+		}
+		updated := false
+		for _, rec := range recs {
+			if rec.Status != database.StrategyStatusPending {
+				continue
+			}
+			pendingAt := pendingTimestamp(rec)
+			if pendingAt.IsZero() || now.Sub(pendingAt) <= s.pendingTimeout {
+				continue
+			}
+			newState := strings.TrimSpace(rec.StateJSON)
+			if strings.TrimSpace(rec.PlanComponent) == "" {
+				if st, err := exit.DecodeTierPlanState(newState); err == nil {
+					st.PendingSince = 0
+					st.PendingOrderID = ""
+					st.PendingEvent = ""
+					newState = exit.EncodeTierPlanState(st)
+				}
+			} else {
+				if st, err := exit.DecodeTierComponentState(newState); err == nil {
+					st.Status = "waiting"
+					st.PendingSince = 0
+					st.PendingOrderID = ""
+					st.TriggeredAt = 0
+					st.TriggerPrice = 0
+					st.LastEvent = "pending_timeout"
+					newState = exit.EncodeTierComponentState(st)
+				}
+			}
+			inst := &exit.PlanInstance{Record: rec}
+			if ok := s.repo.PersistPlanState(ctx, inst, newState, database.StrategyStatusWaiting); !ok {
+				continue
+			}
+			updated = true
+			logger.Warnf("PlanScheduler: 已清理超时 pending trade=%d plan=%s component=%s pending_at=%s",
+				tradeID, strings.TrimSpace(rec.PlanID), strings.TrimSpace(rec.PlanComponent), pendingAt.Format(time.RFC3339))
+		}
+		if updated {
+			dirtyTrades = append(dirtyTrades, tradeID)
+		}
+	}
+	for _, tradeID := range dirtyTrades {
+		s.rebuildTrade(ctx, tradeID)
+	}
+}
+
+func pendingTimestamp(rec database.StrategyInstanceRecord) time.Time {
+	component := strings.TrimSpace(rec.PlanComponent)
+	stateJSON := strings.TrimSpace(rec.StateJSON)
+	switch {
+	case component == "":
+		if st, err := exit.DecodeTierPlanState(stateJSON); err == nil && st.PendingSince > 0 {
+			return time.Unix(st.PendingSince, 0)
+		}
+	default:
+		if st, err := exit.DecodeTierComponentState(stateJSON); err == nil && st.PendingSince > 0 {
+			return time.Unix(st.PendingSince, 0)
+		}
+	}
+	if !rec.UpdatedAt.IsZero() {
+		return rec.UpdatedAt
+	}
+	return time.Time{}
 }
 
 // priceLoop consumes price ticks from the channel and dispatches them to relevant watchers.
@@ -391,8 +649,6 @@ func (s *PlanScheduler) AdjustPlan(ctx context.Context, req interfaces.PlanAdjus
 		}
 	}
 
-	s.rebuild(ctx)
-
 	s.rebuildTrade(ctx, req.TradeID)
 	return nil
 }
@@ -529,36 +785,13 @@ func (s *PlanScheduler) adjustTierLevelsPlan(ctx context.Context, tradeID int, p
 		if !ok {
 			return fmt.Errorf("%s tier#%d 参数格式错误", alias, i+1)
 		}
-		update := make(map[string]any)
-		if price, ok := tierMap["target_price"]; ok {
-			update["target_price"] = price
-		} else if price, ok := tierMap["target"]; ok {
-			update["target"] = price
-		} else {
-			return fmt.Errorf("%s tier#%d 缺少 target_price", alias, i+1)
-		}
-		if ratio, ok := tierMap["ratio"]; ok {
-			update["ratio"] = ratio
-			if val, ok := utils.AsFloat(ratio); ok {
-				newSum = newSum.Add(decimal.NewFromFloat(val))
-			}
-		} else {
-			if tierStates[i].Status == database.StrategyStatusWaiting {
-				newSum = newSum.Add(decimal.NewFromFloat(tierStates[i].Remaining))
-			}
+		update, ratioContribution, err := buildTierUpdate(alias, i, tierMap, tierStates[i])
+		if err != nil {
+			return err
 		}
 		updates[i] = update
-
-		// Guard: triggered/done tiers must keep original ratio (target_price may drift)
-		if tierStates[i].Status != database.StrategyStatusWaiting {
-			ratio, _ := utils.AsFloat(update["ratio"])
-			if ratio == 0 {
-				ratio = tierStates[i].Ratio
-			}
-			const tol = 1e-9
-			if ratio != 0 && math.Abs(ratio-tierStates[i].Ratio) > tol {
-				return fmt.Errorf("%s 已触发段 %s 的 ratio 不可修改", alias, tierStates[i].Component)
-			}
+		if ratioContribution != 0 {
+			newSum = newSum.Add(decimal.NewFromFloat(ratioContribution))
 		}
 	}
 	oldSum := decimal.Zero
@@ -569,16 +802,58 @@ func (s *PlanScheduler) adjustTierLevelsPlan(ctx context.Context, tradeID int, p
 	if oldSum.Sub(newSum).Abs().GreaterThan(tolerance) {
 		return fmt.Errorf("%s 比例和应为 %s，当前=%s", alias, oldSum.String(), newSum.String())
 	}
-	for i, info := range waiting {
+	for _, info := range waiting {
 		if err := s.AdjustPlan(ctx, interfaces.PlanAdjustSpec{
 			TradeID:   tradeID,
 			PlanID:    planID,
 			Component: info.Component,
-			Params:    updates[i],
+			Params:    updates[info.Index],
 			Source:    source,
 		}); err != nil {
 			return fmt.Errorf("%s: 调整 %s 失败: %w", alias, info.Component, err)
 		}
+	}
+	return nil
+}
+
+func buildTierUpdate(alias string, idx int, tierMap map[string]any, state tierComponentState) (map[string]any, float64, error) {
+	update := make(map[string]any)
+	if price, ok := tierMap["target_price"]; ok {
+		update["target_price"] = price
+	} else if price, ok := tierMap["target"]; ok {
+		update["target"] = price
+	} else {
+		return nil, 0, fmt.Errorf("%s tier#%d 缺少 target_price", alias, idx+1)
+	}
+
+	ratioContribution := 0.0
+	if ratio, ok := tierMap["ratio"]; ok {
+		update["ratio"] = ratio
+	}
+	if state.Status == database.StrategyStatusWaiting {
+		if ratio, ok := tierMap["ratio"]; ok {
+			if val, ok := utils.AsFloat(ratio); ok {
+				ratioContribution = val
+			}
+		} else {
+			ratioContribution = state.Remaining
+		}
+	} else {
+		if err := ensureTriggeredRatioImmutable(alias, state, update); err != nil {
+			return nil, 0, err
+		}
+	}
+	return update, ratioContribution, nil
+}
+
+func ensureTriggeredRatioImmutable(alias string, state tierComponentState, update map[string]any) error {
+	ratio, _ := utils.AsFloat(update["ratio"])
+	if ratio == 0 {
+		ratio = state.Ratio
+	}
+	const tol = 1e-9
+	if ratio != 0 && math.Abs(ratio-state.Ratio) > tol {
+		return fmt.Errorf("%s 已触发段 %s 的 ratio 不可修改", alias, state.Component)
 	}
 	return nil
 }
@@ -613,6 +888,7 @@ func cloneMapAny(src map[string]any) map[string]any {
 
 type tierComponentInfo struct {
 	Component string
+	Index     int
 	Remaining float64
 }
 
@@ -676,12 +952,13 @@ func tierComponentStates(recs []database.StrategyInstanceRecord) ([]tierComponen
 
 func filterWaitingTiers(list []tierComponentState) []tierComponentInfo {
 	waiting := make([]tierComponentInfo, 0, len(list))
-	for _, t := range list {
+	for i, t := range list {
 		if t.Status != database.StrategyStatusWaiting {
 			continue
 		}
 		waiting = append(waiting, tierComponentInfo{
 			Component: t.Component,
+			Index:     i,
 			Remaining: t.Remaining,
 		})
 	}

@@ -21,7 +21,6 @@ type engineConfig struct {
 	Providers          []provider.ModelProvider
 	Aggregator         decision.Aggregator
 	PromptMgr          *strategy.Manager
-	SystemTemplate     string
 	Store              market.KlineStore
 	Intervals          []string
 	HorizonName        string
@@ -37,7 +36,7 @@ type decisionArtifacts struct {
 	store *database.DecisionLogStore
 }
 
-func buildDecisionArtifacts(ctx context.Context, cfg brcfg.AIConfig, engine *decision.LegacyEngineAdapter) (*decisionArtifacts, error) {
+func buildDecisionArtifacts(ctx context.Context, cfg brcfg.AIConfig, engine *decision.DecisionEngine) (*decisionArtifacts, error) {
 	artifacts := &decisionArtifacts{}
 	if strings.TrimSpace(cfg.DecisionLogPath) == "" {
 		return artifacts, nil
@@ -132,7 +131,7 @@ func buildModelProviders(ctx context.Context, cfg brcfg.AIConfig, timeoutSeconds
 	return providers, finalDisabled, visionReady, nil
 }
 
-func buildDecisionEngine(cfg engineConfig) *decision.LegacyEngineAdapter {
+func buildDecisionEngine(cfg engineConfig) *decision.DecisionEngine {
 	agg := cfg.Aggregator
 	if agg == nil {
 		agg = decision.FirstWinsAggregator{}
@@ -146,23 +145,22 @@ func buildDecisionEngine(cfg engineConfig) *decision.LegacyEngineAdapter {
 			}
 		}
 	}
-	return &decision.LegacyEngineAdapter{
-		Providers:             cfg.Providers,
-		Agg:                   agg,
-		PromptMgr:             cfg.PromptMgr,
-		SystemTemplate:        cfg.SystemTemplate,
-		KStore:                cfg.Store,
-		Intervals:             append([]string(nil), cfg.Intervals...),
-		HorizonName:           cfg.HorizonName,
-		MultiAgent:            cfg.MultiAgent,
-		ProviderPreference:    append([]string(nil), cfg.ProviderPreference...),
-		FinalDisabled:         finalDisabled,
-		Parallel:              true,
-		LogEachModel:          cfg.LogEachModel,
-		DebugStructuredBlocks: cfg.LogEachModel,
-		Metrics:               cfg.Metrics,
-		TimeoutSeconds:        cfg.TimeoutSeconds,
+	engine := &decision.DecisionEngine{
+		Providers:          cfg.Providers,
+		Agg:                agg,
+		PromptMgr:          cfg.PromptMgr,
+		KStore:             cfg.Store,
+		Intervals:          append([]string(nil), cfg.Intervals...),
+		HorizonName:        cfg.HorizonName,
+		MultiAgent:         cfg.MultiAgent,
+		ProviderPreference: append([]string(nil), cfg.ProviderPreference...),
+		FinalDisabled:      finalDisabled,
+		Parallel:           true,
+		LogEachModel:       cfg.LogEachModel,
+		TimeoutSeconds:     cfg.TimeoutSeconds,
 	}
+	engine.PromptBuilder = decision.NewDefaultPromptBuilder(cfg.PromptMgr, cfg.Metrics, cfg.Intervals, cfg.LogEachModel)
+	return engine
 }
 
 func applyDefaultMultiAgentBlocks(cfg *brcfg.Config, symbolCount, intervalCount int) {

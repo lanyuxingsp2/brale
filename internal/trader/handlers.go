@@ -25,9 +25,15 @@ func (t *Trader) handleSignalEntry(payload json.RawMessage, traceID string) erro
 		}
 	}
 
+	symbol := normalizeSymbol(input.Symbol)
+	if symbol == "" {
+		return fmt.Errorf("signal entry missing symbol")
+	}
+	input.Symbol = symbol
+
 	logger.Infof("Trader handling signal entry for %s %s (async)", input.Symbol, input.Side)
 
-	if _, exists := t.state.Positions[input.Symbol]; exists {
+	if _, exists := t.state.Positions[symbol]; exists {
 		logger.Warnf("Position already exists for %s, ignoring entry signal", input.Symbol)
 		return nil
 	}
@@ -270,6 +276,18 @@ func (t *Trader) applyPositionClosed(payload json.RawMessage) error {
 		return fmt.Errorf("invalid payload for position_closed: %w", err)
 	}
 
+	symbol, err := t.resolveClosedSymbol(p)
+	if err != nil {
+		return err
+	}
+
+	if !isFullClose(p.RemainingAmount) {
+		return t.handlePartialClose(symbol, p)
+	}
+	return t.handleFullClose(symbol, p)
+}
+
+func (t *Trader) resolveClosedSymbol(p PositionClosedPayload) (string, error) {
 	symbol := normalizeSymbol(p.Symbol)
 	if symbol == "" && p.TradeID != "" {
 		if sym, ok := t.state.ByTradeID[p.TradeID]; ok {
@@ -277,32 +295,32 @@ func (t *Trader) applyPositionClosed(payload json.RawMessage) error {
 		}
 	}
 	if symbol == "" {
-		return fmt.Errorf("position_closed missing symbol and trade id")
+		return "", fmt.Errorf("position_closed missing symbol and trade id")
 	}
+	return symbol, nil
+}
 
-	pos, exists := t.state.Positions[symbol]
+func isFullClose(remaining float64) bool {
 	const eps = 1e-8
-	remaining := p.RemainingAmount
-	fullClose := remaining <= eps
+	return remaining <= eps
+}
 
-	if !fullClose {
-		if exists && pos != nil {
-			pos.Amount = remaining
-			pos.UpdatedAt = time.Now()
-		}
-		if t.posStore != nil {
-			if id, err := strconv.Atoi(strings.TrimSpace(p.TradeID)); err == nil && id > 0 {
-				if err := t.posStore.UpdateOrderStatus(context.Background(), id, database.LiveOrderStatusClosingPartial); err != nil {
-					return fmt.Errorf("failed to mark trade %d partial: %w", id, err)
-				}
-			}
-		}
-		t.refreshSnapshot(true)
-		logger.Infof("State Updated: Position partially closed for %s, 剩余 %.4f", symbol, remaining)
-		return nil
+func (t *Trader) handlePartialClose(symbol string, p PositionClosedPayload) error {
+	pos, exists := t.state.Positions[symbol]
+	if exists && pos != nil {
+		pos.Amount = p.RemainingAmount
+		pos.UpdatedAt = time.Now()
 	}
+	if err := t.markOrderStatus(p.TradeID, database.LiveOrderStatusClosingPartial); err != nil {
+		return err
+	}
+	t.refreshSnapshot(true)
+	logger.Infof("State Updated: Position partially closed for %s, 剩余 %.4f", symbol, p.RemainingAmount)
+	return nil
+}
 
-	if exists {
+func (t *Trader) handleFullClose(symbol string, p PositionClosedPayload) error {
+	if _, exists := t.state.Positions[symbol]; exists {
 		delete(t.state.Positions, symbol)
 	}
 	if p.TradeID != "" {
@@ -311,15 +329,22 @@ func (t *Trader) applyPositionClosed(payload json.RawMessage) error {
 	}
 	delete(t.state.SymbolIndex, symbol)
 
-	if t.posStore != nil {
-		if id, err := strconv.Atoi(strings.TrimSpace(p.TradeID)); err == nil && id > 0 {
-			if err := t.posStore.UpdateOrderStatus(context.Background(), id, database.LiveOrderStatusClosed); err != nil {
-				return fmt.Errorf("failed to mark trade %d closed: %w", id, err)
-			}
-		}
+	if err := t.markOrderStatus(p.TradeID, database.LiveOrderStatusClosed); err != nil {
+		return err
 	}
-
 	t.refreshSnapshot(true)
 	logger.Infof("State Updated: Position closed for %s (ID: %s)", symbol, p.TradeID)
+	return nil
+}
+
+func (t *Trader) markOrderStatus(tradeID string, status database.LiveOrderStatus) error {
+	if t.posStore == nil {
+		return nil
+	}
+	if id, err := strconv.Atoi(strings.TrimSpace(tradeID)); err == nil && id > 0 {
+		if err := t.posStore.UpdateOrderStatus(context.Background(), id, status); err != nil {
+			return fmt.Errorf("failed to mark trade %d %v: %w", id, status, err)
+		}
+	}
 	return nil
 }

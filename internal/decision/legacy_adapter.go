@@ -9,7 +9,6 @@ import (
 	"time"
 
 	brcfg "brale/internal/config"
-	"brale/internal/decision/render"
 	"brale/internal/exitplan"
 	"brale/internal/gateway/notifier"
 	"brale/internal/gateway/provider"
@@ -24,15 +23,15 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-type LegacyEngineAdapter struct {
+type DecisionEngine struct {
 	Providers     []provider.ModelProvider
 	Agg           Aggregator
 	Observer      DecisionObserver
 	AgentNotifier notifier.TextNotifier
 	AgentHistory  AgentOutputHistory
 
-	PromptMgr      *strategy.Manager
-	SystemTemplate string
+	PromptBuilder PromptBuilder
+	PromptMgr     *strategy.Manager
 
 	KStore      market.KlineStore
 	Intervals   []string
@@ -50,20 +49,16 @@ type LegacyEngineAdapter struct {
 
 	LogEachModel bool
 
-	DebugStructuredBlocks bool
-
-	Metrics *market.MetricsService
-
 	TimeoutSeconds int
 }
 
 const priceWindowBars = 4
 
-func (e *LegacyEngineAdapter) Name() string {
+func (e *DecisionEngine) Name() string {
 	if e.Name_ != "" {
 		return e.Name_
 	}
-	return "legacy-adapter"
+	return "decision-engine"
 }
 
 // Decide is the main entry point for the decision engine.
@@ -76,7 +71,7 @@ func (e *LegacyEngineAdapter) Name() string {
 //   - Iterates through symbols sequentially (to manage rate limits/context).
 //   - Aggregates results into a single DecisionResult.
 //   - Merges meta-voting breakdowns if available.
-func (e *LegacyEngineAdapter) Decide(ctx context.Context, input Context) (DecisionResult, error) {
+func (e *DecisionEngine) Decide(ctx context.Context, input Context) (DecisionResult, error) {
 	order, grouped := groupAnalysisBySymbol(input.Analysis, input.Candidates)
 
 	if len(order) <= 1 {
@@ -151,10 +146,15 @@ func (e *LegacyEngineAdapter) Decide(ctx context.Context, input Context) (Decisi
 //
 // 5. Aggregate: Combine outputs using the configured strategy (FirstWins or MetaVoting).
 // 6. Trace: Log full decision trace for debugging/audit.
-func (e *LegacyEngineAdapter) decideSingle(ctx context.Context, input Context, applyDelay bool) (DecisionResult, error) {
+func (e *DecisionEngine) decideSingle(ctx context.Context, input Context, applyDelay bool) (DecisionResult, error) {
 	insights := e.runMultiAgents(ctx, input)
-	baseSys, usr := e.ComposePrompts(ctx, input, insights)
-	visionPayloads := e.collectVisionPayloads(input.Analysis)
+	if e.PromptBuilder == nil {
+		return DecisionResult{}, fmt.Errorf("prompt builder not configured")
+	}
+	baseSys, usr, visionPayloads, err := e.PromptBuilder.Build(ctx, input, insights)
+	if err != nil {
+		return DecisionResult{}, err
+	}
 
 	if applyDelay {
 		time.Sleep(5 * time.Second)
@@ -212,7 +212,7 @@ func (e *LegacyEngineAdapter) decideSingle(ctx context.Context, input Context, a
 	return result, nil
 }
 
-func (e *LegacyEngineAdapter) logModelTables(outs []ModelOutput) {
+func (e *DecisionEngine) logModelTables(outs []ModelOutput) {
 	results := make([]ResultRow, 0, 8)
 
 	for _, o := range outs {
@@ -246,21 +246,7 @@ func (e *LegacyEngineAdapter) logModelTables(outs []ModelOutput) {
 	logger.InfoBlock(tResults)
 }
 
-func (e *LegacyEngineAdapter) ComposePrompts(ctx context.Context, input Context, insights []AgentInsight) (string, string) {
-	system := strings.TrimSpace(input.Prompt.System)
-	userSummary := strings.TrimSpace(e.buildUserSummary(ctx, input, insights))
-	userExtra := strings.TrimSpace(input.Prompt.User)
-	switch {
-	case userSummary != "" && userExtra != "":
-		return system, userSummary + "\n\n" + userExtra
-	case userSummary != "":
-		return system, userSummary
-	default:
-		return system, userExtra
-	}
-}
-
-func (e *LegacyEngineAdapter) loadTemplate(name string) string {
+func (e *DecisionEngine) loadTemplate(name string) string {
 	if e.PromptMgr == nil {
 		return ""
 	}
@@ -272,79 +258,6 @@ func (e *LegacyEngineAdapter) loadTemplate(name string) string {
 		return s
 	}
 	return ""
-}
-
-func (e *LegacyEngineAdapter) buildUserSummary(ctx context.Context, input Context, insights []AgentInsight) string {
-	e.refreshDerivativesOnDemand(ctx, input.Candidates, input.Directives)
-	sections := render.Sections{
-		Account:     e.renderAccountOverview(input.Account),
-		Previous:    e.renderPreviousReasoning(input.PreviousReasoning),
-		Derivatives: e.renderDerivativesMetrics(input.Candidates, input.Directives),
-		Positions:   e.renderPositionDetails(input.Positions),
-		Klines:      e.renderKlineWindows(input.Analysis),
-		Agents:      e.renderAgentBlocks(insights),
-		Guidelines:  e.renderOutputConstraints(input),
-	}
-	var loader render.TemplateLoader
-	if e.PromptMgr != nil {
-		loader = e.PromptMgr
-	}
-	summary := render.RenderSummary(loader, sections)
-	logStructuredBlocksDebug(e.DebugStructuredBlocks, input.Analysis)
-	return summary
-}
-
-func (e *LegacyEngineAdapter) refreshDerivativesOnDemand(ctx context.Context, symbols []string, directives map[string]ProfileDirective) {
-	if e == nil || e.Metrics == nil || len(symbols) == 0 || len(directives) == 0 {
-		return
-	}
-
-	need := make([]string, 0, len(symbols))
-	for _, sym := range symbols {
-		dir, ok := lookupDirective(sym, directives)
-		if !ok || !dir.allowDerivatives() {
-			continue
-		}
-		s := strings.ToUpper(strings.TrimSpace(sym))
-		if s == "" {
-			continue
-		}
-		need = append(need, s)
-	}
-	if len(need) == 0 {
-		return
-	}
-
-	var eg errgroup.Group
-	eg.SetLimit(4)
-	for _, sym := range need {
-		sym := sym
-		eg.Go(func() error {
-			refreshCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			defer cancel()
-			e.Metrics.RefreshSymbol(refreshCtx, sym)
-			return nil
-		})
-	}
-	_ = eg.Wait()
-}
-
-func (e *LegacyEngineAdapter) collectVisionPayloads(ctxs []AnalysisContext) []provider.ImagePayload {
-	if len(ctxs) == 0 {
-		return nil
-	}
-	out := make([]provider.ImagePayload, 0, 4)
-	for _, ac := range ctxs {
-		if ac.ImageB64 == "" {
-			continue
-		}
-		desc := fmt.Sprintf("%s %s %s", ac.Symbol, ac.Interval, ac.ImageNote)
-		out = append(out, provider.ImagePayload{DataURI: ac.ImageB64, Description: strings.TrimSpace(desc)})
-		if len(out) >= cap(out) {
-			break
-		}
-	}
-	return out
 }
 
 // callProvider invokes a single LLM provider and parses its output.
@@ -359,7 +272,7 @@ func (e *LegacyEngineAdapter) collectVisionPayloads(ctxs []AnalysisContext) []pr
 //   - Validates business logic (validateExitPlans).
 //
 // Returns a ModelOutput containing both raw response and parsed structure.
-func (e *LegacyEngineAdapter) callProvider(parent context.Context, p provider.ModelProvider, system, user string, baseImages []provider.ImagePayload) ModelOutput {
+func (e *DecisionEngine) callProvider(parent context.Context, p provider.ModelProvider, system, user string, baseImages []provider.ImagePayload) ModelOutput {
 	cctx := parent
 	var cancel context.CancelFunc
 	if timeout := e.TimeoutSeconds; timeout > 0 {
@@ -436,7 +349,7 @@ func (e *LegacyEngineAdapter) callProvider(parent context.Context, p provider.Mo
 	}
 }
 
-func (e *LegacyEngineAdapter) collectModelOutputs(ctx context.Context, call func(context.Context, provider.ModelProvider) ModelOutput) []ModelOutput {
+func (e *DecisionEngine) collectModelOutputs(ctx context.Context, call func(context.Context, provider.ModelProvider) ModelOutput) []ModelOutput {
 	if !e.Parallel {
 		outs := make([]ModelOutput, 0, len(e.Providers))
 		for _, p := range e.Providers {
@@ -481,7 +394,7 @@ func (e *LegacyEngineAdapter) collectModelOutputs(ctx context.Context, call func
 	return outs
 }
 
-func (e *LegacyEngineAdapter) validateExitPlans(decisions []Decision) error {
+func (e *DecisionEngine) validateExitPlans(decisions []Decision) error {
 	if e == nil || e.ExitPlans == nil {
 		return nil
 	}
@@ -516,7 +429,7 @@ func invokeProviderSafe(ctx context.Context, p provider.ModelProvider, call func
 	return call(ctx, p)
 }
 
-func (e *LegacyEngineAdapter) isFinalStageDisabled(id string) bool {
+func (e *DecisionEngine) isFinalStageDisabled(id string) bool {
 	if len(e.FinalDisabled) == 0 {
 		return false
 	}

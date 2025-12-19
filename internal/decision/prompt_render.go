@@ -13,12 +13,12 @@ import (
 	textutil "brale/internal/pkg/text"
 )
 
-func (e *LegacyEngineAdapter) renderAgentBlocks(insights []AgentInsight) string {
+func (b *DefaultPromptBuilder) renderAgentBlocks(insights []AgentInsight) string {
 	if len(insights) == 0 {
 		return ""
 	}
-	var b strings.Builder
-	b.WriteString("\n## Multi-Agent 协作\n")
+	var sb strings.Builder
+	sb.WriteString("\n## Multi-Agent 协作\n")
 	stageOrder := []string{agentStageIndicator, agentStagePattern, agentStageTrend}
 	stageMap := make(map[string]AgentInsight, len(insights))
 	for _, ins := range insights {
@@ -39,9 +39,9 @@ func (e *LegacyEngineAdapter) renderAgentBlocks(insights []AgentInsight) string 
 		header := fmt.Sprintf("- [%s | 模型:%s] ", title, provider)
 		output := strings.TrimSpace(ins.Output)
 		if output != "" {
-			b.WriteString(header)
-			b.WriteString(textutil.Truncate(output, 3600))
-			b.WriteString("\n")
+			sb.WriteString(header)
+			sb.WriteString(textutil.Truncate(output, 3600))
+			sb.WriteString("\n")
 			return
 		}
 		status := "无输出"
@@ -51,7 +51,7 @@ func (e *LegacyEngineAdapter) renderAgentBlocks(insights []AgentInsight) string 
 		if ins.Warned {
 			status += "（已通知）"
 		}
-		b.WriteString(header + status + "\n")
+		sb.WriteString(header + status + "\n")
 	}
 	used := make(map[string]bool, len(stageOrder))
 	for _, stage := range stageOrder {
@@ -66,11 +66,11 @@ func (e *LegacyEngineAdapter) renderAgentBlocks(insights []AgentInsight) string 
 		}
 		write(ins)
 	}
-	b.WriteString("↑ 若 Agent 提示某组件已触发，保持现有退出计划，仅对未触发段位进行增改。\n")
-	return b.String()
+	sb.WriteString("↑ 若 Agent 提示某组件已触发，保持现有退出计划，仅对未触发段位进行增改。\n")
+	return sb.String()
 }
 
-func (e *LegacyEngineAdapter) renderPreviousReasoning(reasonMap map[string]string) string {
+func (b *DefaultPromptBuilder) renderPreviousReasoning(reasonMap map[string]string) string {
 	if len(reasonMap) == 0 {
 		return ""
 	}
@@ -93,94 +93,123 @@ func (e *LegacyEngineAdapter) renderPreviousReasoning(reasonMap map[string]strin
 	sort.Slice(entries, func(i, j int) bool {
 		return entries[i].symbol < entries[j].symbol
 	})
-	var b strings.Builder
-	b.WriteString("\n## 上一轮决策回顾\n")
+	var sb strings.Builder
+	sb.WriteString("\n## 上一轮决策回顾\n")
 	for _, ent := range entries {
-		b.WriteString(fmt.Sprintf("- %s：%s\n", ent.symbol, textutil.Truncate(ent.reason, 1000)))
+		sb.WriteString(fmt.Sprintf("- %s：%s\n", ent.symbol, textutil.Truncate(ent.reason, 1000)))
 	}
-	return b.String()
+	return sb.String()
 }
 
-func (e *LegacyEngineAdapter) renderOutputConstraints(input Context) string {
+func (b *DefaultPromptBuilder) renderOutputConstraints(input Context) string {
 	return renderOutputConstraints(input.ProfilePrompts, "只可以返回json数据，并且只可以有单个action。示例:")
 }
 
-func (e *LegacyEngineAdapter) renderDerivativesMetrics(ctxs []string, directives map[string]ProfileDirective) string {
-	if e.Metrics == nil || len(ctxs) == 0 || len(directives) == 0 {
+func (b *DefaultPromptBuilder) renderDerivativesMetrics(ctxs []string, directives map[string]ProfileDirective) string {
+	if b.Metrics == nil || len(ctxs) == 0 || len(directives) == 0 {
 		return ""
 	}
-	var b strings.Builder
-	b.WriteString("\n## 市场衍生品数据 (Market Derivatives Data)\n")
+	var sb strings.Builder
+	sb.WriteString("\n## 市场衍生品数据 (Market Derivatives Data)\n")
 	for _, sym := range ctxs {
 		dir, ok := lookupDirective(sym, directives)
 		if !ok || !dir.allowDerivatives() {
 			continue
 		}
-		metricsData, ok := e.Metrics.Get(sym)
+		metricsData, ok := b.Metrics.Get(sym)
 		if !ok || metricsData.Error != "" {
-			b.WriteString(fmt.Sprintf("- %s: 获取衍生品数据失败 (%s)\n", strings.ToUpper(sym), metricsData.Error))
+			sb.WriteString(fmt.Sprintf("- %s: 获取衍生品数据失败 (%s)\n", strings.ToUpper(sym), metricsData.Error))
 			continue
 		}
 
-		b.WriteString(fmt.Sprintf("- %s:\n", strings.ToUpper(sym)))
+		sb.WriteString(fmt.Sprintf("- %s:\n", strings.ToUpper(sym)))
 		if dir.IncludeOI {
-			b.WriteString(fmt.Sprintf("  - 最新未平仓量 (OI): %.2f\n", metricsData.OI))
-			for _, tf := range e.Metrics.GetTargetTimeframes() {
+			sb.WriteString(fmt.Sprintf("  - 最新未平仓量 (OI): %.2f\n", metricsData.OI))
+			for _, tf := range b.Metrics.GetTargetTimeframes() {
 				if oldOI, ok := metricsData.OIHistory[tf]; ok && oldOI > 0 {
 					changePct := (metricsData.OI - oldOI) / oldOI * 100
-					b.WriteString(fmt.Sprintf("    - OI %s前: %.2f (%.2f%%)\n", tf, oldOI, changePct))
+					sb.WriteString(fmt.Sprintf("    - OI %s前: %.2f (%.2f%%)\n", tf, oldOI, changePct))
 				} else {
-					b.WriteString(fmt.Sprintf("    - OI %s前: 无数据\n", tf))
+					sb.WriteString(fmt.Sprintf("    - OI %s前: 无数据\n", tf))
 				}
 			}
 		}
 		if dir.IncludeFunding {
-			b.WriteString(fmt.Sprintf("  - 资金费率 (Funding Rate): %.4f%%\n", metricsData.FundingRate*100))
+			sb.WriteString(fmt.Sprintf("  - 资金费率 (Funding Rate): %.4f%%\n", metricsData.FundingRate*100))
 		}
 	}
-	b.WriteString("请结合这些衍生品数据评估市场情绪和资金动向。\n")
-	return b.String()
+	sb.WriteString("请结合这些衍生品数据评估市场情绪和资金动向。\n")
+	return sb.String()
 }
 
-func (e *LegacyEngineAdapter) renderKlineWindows(ctxs []AnalysisContext) string {
-	if len(ctxs) == 0 {
+func (b *DefaultPromptBuilder) renderKlineWindows(ctxs []AnalysisContext) string {
+	windows, latestLine := collectKlineWindows(ctxs)
+	if len(windows) == 0 {
 		return ""
 	}
-	rank := buildIntervalRank(e.Intervals)
+	sortKlineWindows(windows, buildIntervalRank(b.Intervals))
+	return renderKlineWindowsOutput(windows, latestLine)
+}
+
+func collectKlineWindows(ctxs []AnalysisContext) ([]klineWindow, string) {
+	if len(ctxs) == 0 {
+		return nil, ""
+	}
 	windows := make([]klineWindow, 0, len(ctxs))
 	var latestLine string
 	for _, ac := range ctxs {
-		csvData := strings.TrimSpace(ac.KlineCSV)
-		bars, err := parseRecentCandles(ac.KlineJSON, priceWindowBars)
-		if err != nil {
-			logger.Debugf("kline snapshot 解析失败 %s %s: %v", ac.Symbol, ac.Interval, err)
+		win, ok, line := buildKlineWindow(ac)
+		if !ok {
 			continue
 		}
-		if len(bars) == 0 && csvData == "" {
-			continue
-		}
-		win := klineWindow{
-			Symbol:   strings.ToUpper(strings.TrimSpace(ac.Symbol)),
-			Interval: strings.TrimSpace(ac.Interval),
-			Horizon:  strings.TrimSpace(ac.ForecastHorizon),
-			Trend:    ac.TrendReport,
-			CSV:      csvData,
-			Bars:     bars,
-		}
-		if win.Symbol == "" || win.Interval == "" {
-			continue
-		}
-		if len(bars) > 0 && latestLine == "" {
-			latest := bars[len(bars)-1]
-			latestLine = fmt.Sprintf("最新价格：%s 收=%.4f 时间=%s",
-				strings.ToUpper(strings.TrimSpace(ac.Symbol)),
-				latest.Close,
-				time.UnixMilli(latest.CloseTime).UTC().Format(time.RFC3339))
+		if latestLine == "" && line != "" {
+			latestLine = line
 		}
 		windows = append(windows, win)
 	}
-	if len(windows) == 0 {
+	return windows, latestLine
+}
+
+func buildKlineWindow(ac AnalysisContext) (klineWindow, bool, string) {
+	csvData := strings.TrimSpace(ac.KlineCSV)
+	bars, err := parseRecentCandles(ac.KlineJSON, priceWindowBars)
+	if err != nil {
+		logger.Debugf("kline snapshot 解析失败 %s %s: %v", ac.Symbol, ac.Interval, err)
+		return klineWindow{}, false, ""
+	}
+	if len(bars) == 0 && csvData == "" {
+		return klineWindow{}, false, ""
+	}
+	symbol := strings.ToUpper(strings.TrimSpace(ac.Symbol))
+	interval := strings.TrimSpace(ac.Interval)
+	if symbol == "" || interval == "" {
+		return klineWindow{}, false, ""
+	}
+	win := klineWindow{
+		Symbol:   symbol,
+		Interval: interval,
+		Horizon:  strings.TrimSpace(ac.ForecastHorizon),
+		Trend:    ac.TrendReport,
+		CSV:      csvData,
+		Bars:     bars,
+	}
+	return win, true, buildLatestPriceLine(symbol, bars)
+}
+
+func buildLatestPriceLine(symbol string, bars []market.Candle) string {
+	if len(bars) == 0 || strings.TrimSpace(symbol) == "" {
 		return ""
+	}
+	latest := bars[len(bars)-1]
+	return fmt.Sprintf("最新价格：%s 收=%.4f 时间=%s",
+		strings.ToUpper(strings.TrimSpace(symbol)),
+		latest.Close,
+		time.UnixMilli(latest.CloseTime).UTC().Format(time.RFC3339))
+}
+
+func sortKlineWindows(windows []klineWindow, rank map[string]int) {
+	if len(windows) < 2 {
+		return
 	}
 	sort.Slice(windows, func(i, j int) bool {
 		if windows[i].Symbol == windows[j].Symbol {
@@ -193,38 +222,47 @@ func (e *LegacyEngineAdapter) renderKlineWindows(ctxs []AnalysisContext) string 
 		}
 		return windows[i].Symbol < windows[j].Symbol
 	})
-	var b strings.Builder
-	b.WriteString("\n## Price Windows（最近 4 根，最新在前）\n")
+}
+
+func renderKlineWindowsOutput(windows []klineWindow, latestLine string) string {
+	var sb strings.Builder
+	sb.WriteString("\n## Price Windows（最近 4 根，最新在前）\n")
 	if latestLine != "" {
-		b.WriteString(latestLine + "\n")
+		sb.WriteString(latestLine + "\n")
 	}
 	for _, win := range windows {
-		header := fmt.Sprintf("- %s %s", win.Symbol, win.Interval)
-		if win.Horizon != "" {
-			header += fmt.Sprintf(" (%s)", win.Horizon)
-		}
-		b.WriteString(header + "\n")
-		if len(win.Bars) == 0 {
-			continue
-		}
-		for idx := len(win.Bars) - 1; idx >= 0; idx-- {
-			bar := win.Bars[idx]
-			b.WriteString(fmt.Sprintf("    [%s, o=%s, h=%s, l=%s, c=%s, v=%.2f]\n",
-				bar.TimeString(),
-				formatutil.Float(bar.Open, 4),
-				formatutil.Float(bar.High, 4),
-				formatutil.Float(bar.Low, 4),
-				formatutil.Float(bar.Close, 4),
-				bar.Volume,
-			))
-		}
-		if summary := market.Candles(win.Bars).Snapshot(win.Interval, win.Trend); summary != "" {
-			b.WriteString("  Snapshot: " + summary + "\n")
-		}
-		b.WriteString("\n")
+		writeKlineWindow(&sb, win)
 	}
-	b.WriteString("请结合这些时间窗口评估当前价格位置与动量。\n")
-	return b.String()
+	sb.WriteString("请结合这些时间窗口评估当前价格位置与动量。\n")
+	return sb.String()
+}
+
+func writeKlineWindow(sb *strings.Builder, win klineWindow) {
+	if sb == nil || win.Symbol == "" || win.Interval == "" {
+		return
+	}
+	header := fmt.Sprintf("- %s %s", win.Symbol, win.Interval)
+	if win.Horizon != "" {
+		header += fmt.Sprintf(" (%s)", win.Horizon)
+	}
+	sb.WriteString(header + "\n")
+	for idx := len(win.Bars) - 1; idx >= 0; idx-- {
+		bar := win.Bars[idx]
+		sb.WriteString(fmt.Sprintf("    [%s, o=%s, h=%s, l=%s, c=%s, v=%.2f]\n",
+			bar.TimeString(),
+			formatutil.Float(bar.Open, 4),
+			formatutil.Float(bar.High, 4),
+			formatutil.Float(bar.Low, 4),
+			formatutil.Float(bar.Close, 4),
+			bar.Volume,
+		))
+	}
+	if len(win.Bars) > 0 {
+		if summary := market.Candles(win.Bars).Snapshot(win.Interval, win.Trend); summary != "" {
+			sb.WriteString("  Snapshot: " + summary + "\n")
+		}
+		sb.WriteString("\n")
+	}
 }
 
 func logStructuredBlocksDebug(debug bool, ctxs []AnalysisContext) {

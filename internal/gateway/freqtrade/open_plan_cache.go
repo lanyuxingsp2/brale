@@ -3,6 +3,7 @@ package freqtrade
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -162,15 +163,10 @@ func (m *Manager) initExitPlanOnEntryFill(ctx context.Context, tradeID int, symb
 	if m == nil || m.posStore == nil || tradeID <= 0 {
 		return
 	}
-
 	baseCtx := context.Background()
-	checkCtx, cancel := context.WithTimeout(baseCtx, 3*time.Second)
-	recs, err := m.posStore.ListStrategyInstances(checkCtx, tradeID)
-	cancel()
-	if err == nil && len(recs) > 0 {
+	if m.exitPlanAlreadyInitialized(baseCtx, tradeID) {
 		return
 	}
-
 	keySymbol := normalizePlanSymbol(symbol)
 	entry, ok := m.takeCachedOpenPlan(keySymbol)
 	if !ok || entry.Plan == nil {
@@ -180,25 +176,13 @@ func (m *Manager) initExitPlanOnEntryFill(ctx context.Context, tradeID int, symb
 	if planID == "" {
 		return
 	}
-	planSpec := entry.Plan.Params
-	if planSpec == nil {
-		planSpec = map[string]any{}
-	}
-	planVersion := entry.ExitPlanVersion
-	if planVersion <= 0 {
-		planVersion = 1
-	}
-	side := strings.ToLower(strings.TrimSpace(entry.Side))
-	if side == "" {
-		side = deriveOpenSide(entry.Decision.Action)
-	}
-	if entryPrice <= 0 {
-		entryPrice = m.lookupEntryPrice(baseCtx, tradeID, keySymbol)
+
+	args := buildComboInstantiateArgs(tradeID, keySymbol, entry, entryPrice, m.lookupEntryPrice)
+	if args.PlanSpec == nil {
+		args.PlanSpec = map[string]any{}
 	}
 
-	reg := exit.NewHandlerRegistry()
-	exithandlers.RegisterCoreHandlers(reg)
-	handler, _ := reg.Handler("combo_group")
+	handler := comboGroupHandler()
 	if handler == nil {
 		m.restoreCachedOpenPlan(keySymbol, entry)
 		logger.Warnf("initExitPlanOnEntryFill: handler combo_group 未注册 trade=%d symbol=%s", tradeID, keySymbol)
@@ -207,29 +191,14 @@ func (m *Manager) initExitPlanOnEntryFill(ctx context.Context, tradeID int, symb
 
 	workCtx, cancel := context.WithTimeout(baseCtx, 8*time.Second)
 	defer cancel()
-	insts, err := handler.Instantiate(workCtx, exit.InstantiateArgs{
-		TradeID:       tradeID,
-		PlanID:        planID,
-		PlanVersion:   planVersion,
-		PlanSpec:      planSpec,
-		Decision:      entry.Decision,
-		EntryPrice:    entryPrice,
-		Side:          side,
-		Symbol:        keySymbol,
-		DecisionTrace: entry.TraceID,
-	})
+	records, err := instantiateComboPlanRecords(workCtx, handler, planID, args)
 	if err != nil {
 		m.restoreCachedOpenPlan(keySymbol, entry)
 		logger.Warnf("initExitPlanOnEntryFill: instantiate 失败 trade=%d symbol=%s plan=%s err=%v", tradeID, keySymbol, planID, err)
 		return
 	}
-	if len(insts) == 0 {
+	if len(records) == 0 {
 		return
-	}
-
-	records := make([]database.StrategyInstanceRecord, 0, len(insts))
-	for _, inst := range insts {
-		records = append(records, inst.Record)
 	}
 	if err := m.posStore.InsertStrategyInstances(workCtx, records); err != nil {
 		m.restoreCachedOpenPlan(keySymbol, entry)
@@ -242,4 +211,67 @@ func (m *Manager) initExitPlanOnEntryFill(ctx context.Context, tradeID int, symb
 	if m.planUpdateHook != nil {
 		m.planUpdateHook.NotifyPlanUpdated(baseCtx, tradeID)
 	}
+}
+
+func (m *Manager) exitPlanAlreadyInitialized(ctx context.Context, tradeID int) bool {
+	checkCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	recs, err := m.posStore.ListStrategyInstances(checkCtx, tradeID)
+	cancel()
+	return err == nil && len(recs) > 0
+}
+
+type entryPriceLookupFn func(context.Context, int, string) float64
+
+func buildComboInstantiateArgs(tradeID int, symbol string, entry cachedOpenPlan, entryPrice float64, lookup entryPriceLookupFn) exit.InstantiateArgs {
+	planVersion := entry.ExitPlanVersion
+	if planVersion <= 0 {
+		planVersion = 1
+	}
+	side := strings.ToLower(strings.TrimSpace(entry.Side))
+	if side == "" {
+		side = deriveOpenSide(entry.Decision.Action)
+	}
+	if entryPrice <= 0 && lookup != nil {
+		entryPrice = lookup(context.Background(), tradeID, symbol)
+	}
+	spec := entry.Plan.Params
+	if spec == nil {
+		spec = map[string]any{}
+	}
+	return exit.InstantiateArgs{
+		TradeID:       tradeID,
+		PlanVersion:   planVersion,
+		PlanSpec:      spec,
+		Decision:      entry.Decision,
+		EntryPrice:    entryPrice,
+		Side:          side,
+		Symbol:        symbol,
+		DecisionTrace: entry.TraceID,
+	}
+}
+
+func comboGroupHandler() exit.PlanHandler {
+	reg := exit.NewHandlerRegistry()
+	exithandlers.RegisterCoreHandlers(reg)
+	handler, _ := reg.Handler("combo_group")
+	return handler
+}
+
+func instantiateComboPlanRecords(ctx context.Context, handler exit.PlanHandler, planID string, args exit.InstantiateArgs) ([]database.StrategyInstanceRecord, error) {
+	if handler == nil {
+		return nil, fmt.Errorf("handler missing")
+	}
+	args.PlanID = planID
+	insts, err := handler.Instantiate(ctx, args)
+	if err != nil {
+		return nil, err
+	}
+	if len(insts) == 0 {
+		return nil, nil
+	}
+	records := make([]database.StrategyInstanceRecord, 0, len(insts))
+	for _, inst := range insts {
+		records = append(records, inst.Record)
+	}
+	return records, nil
 }

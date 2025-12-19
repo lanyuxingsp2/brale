@@ -52,7 +52,7 @@ type ProfilePromptSpec struct {
 }
 
 // Decider is the core decision interface.
-// Takes market context, returns trading decisions. Implemented by LegacyEngineAdapter.
+// Takes market context, returns trading decisions. Implemented by DecisionEngine.
 type Decider interface {
 	Decide(ctx context.Context, input Context) (DecisionResult, error)
 }

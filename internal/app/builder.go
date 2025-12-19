@@ -37,7 +37,7 @@ type AppBuilder struct {
 	promptManagerFn     func(string) (*strategy.Manager, error)
 	marketStackFn       func(context.Context, *brcfg.Config, []string, []string, map[string]int, []string) (*MarketStack, error)
 	modelProvidersFn    func(context.Context, brcfg.AIConfig, int) ([]provider.ModelProvider, map[string]bool, bool, error)
-	decisionArtifactsFn func(context.Context, brcfg.AIConfig, *decision.LegacyEngineAdapter) (*decisionArtifacts, error)
+	decisionArtifactsFn func(context.Context, brcfg.AIConfig, *decision.DecisionEngine) (*decisionArtifacts, error)
 	freqManagerFn       func(brcfg.FreqtradeConfig, string, *database.DecisionLogStore, database.LivePositionStore, store.Store, notifier.TextNotifier) (*freqexec.Manager, error)
 	liveHTTPFn          func(brcfg.AppConfig, *database.DecisionLogStore, livehttp.FreqtradeWebhookHandler, []string, map[string]livehttp.SymbolDetail) (*livehttp.Server, error)
 
@@ -117,7 +117,6 @@ func (b *AppBuilder) Build(ctx context.Context) (*App, error) {
 		Providers:          providers,
 		Aggregator:         buildAggregator(cfg.AI),
 		PromptMgr:          pm,
-		SystemTemplate:     cfg.Prompt.SystemTemplate,
 		Store:              ks,
 		Intervals:          profiles.intervals,
 		HorizonName:        cfg.AI.ActiveHorizon,
@@ -285,20 +284,7 @@ type storeSetup struct {
 }
 
 func (b *AppBuilder) resolveStores(cfg *brcfg.Config, decArtifacts *decisionArtifacts) (storeSetup, error) {
-	var out storeSetup
-	if b.strategyStoreOverride != nil {
-		out.strategyStore = b.strategyStoreOverride
-	}
-	if b.liveStoreOverride != nil {
-		out.liveStore = b.liveStoreOverride
-	} else if b.strategyStoreOverride != nil {
-		if ls, ok := out.strategyStore.(database.LivePositionStore); ok {
-			out.liveStore = ls
-		}
-	}
-	if b.newStoreOverride != nil {
-		out.stateStore = b.newStoreOverride
-	}
+	out := applyStoreOverrides(b)
 	if out.strategyStore != nil && out.liveStore != nil && out.stateStore != nil {
 		return out, nil
 	}
@@ -315,32 +301,68 @@ func (b *AppBuilder) resolveStores(cfg *brcfg.Config, decArtifacts *decisionArti
 	out.liveStore = gormStore
 	out.sharedGorm = gormStore.GormDB()
 
-	if decArtifacts != nil && decArtifacts.store != nil {
-		sqlDB, err := gormStore.SQLDB()
-		if err != nil {
-			return storeSetup{}, fmt.Errorf("获取 SQL DB 失败: %w", err)
-		}
-		if err := decArtifacts.store.UseExternalDB(sqlDB); err != nil {
-			return storeSetup{}, fmt.Errorf("绑定决策日志存储失败: %w", err)
-		}
+	if err := attachDecisionLogDB(gormStore, decArtifacts); err != nil {
+		return storeSetup{}, err
 	}
 
 	if out.stateStore == nil {
-		if out.sharedGorm != nil {
-			ns, err := sqlite.NewSqliteStoreFromDB(out.sharedGorm)
-			if err != nil {
-				return storeSetup{}, fmt.Errorf("初始化 sqlite 存储失败: %w", err)
-			}
-			out.stateStore = ns
-		} else {
-			ns, err := sqlite.NewSqliteStore(path)
-			if err != nil {
-				return storeSetup{}, fmt.Errorf("初始化 sqlite 存储失败: %w", err)
-			}
-			out.stateStore = ns
+		ns, err := initStateStore(path, out.sharedGorm)
+		if err != nil {
+			return storeSetup{}, err
 		}
+		out.stateStore = ns
 	}
 	return out, nil
+}
+
+func applyStoreOverrides(b *AppBuilder) storeSetup {
+	var out storeSetup
+	if b == nil {
+		return out
+	}
+	if b.strategyStoreOverride != nil {
+		out.strategyStore = b.strategyStoreOverride
+	}
+	if b.liveStoreOverride != nil {
+		out.liveStore = b.liveStoreOverride
+	} else if out.strategyStore != nil {
+		if ls, ok := out.strategyStore.(database.LivePositionStore); ok {
+			out.liveStore = ls
+		}
+	}
+	if b.newStoreOverride != nil {
+		out.stateStore = b.newStoreOverride
+	}
+	return out
+}
+
+func attachDecisionLogDB(gormStore *gormstore.GormStore, decArtifacts *decisionArtifacts) error {
+	if decArtifacts == nil || decArtifacts.store == nil || gormStore == nil {
+		return nil
+	}
+	sqlDB, err := gormStore.SQLDB()
+	if err != nil {
+		return fmt.Errorf("获取 SQL DB 失败: %w", err)
+	}
+	if err := decArtifacts.store.UseExternalDB(sqlDB); err != nil {
+		return fmt.Errorf("绑定决策日志存储失败: %w", err)
+	}
+	return nil
+}
+
+func initStateStore(path string, shared *gorm.DB) (store.Store, error) {
+	if shared != nil {
+		ns, err := sqlite.NewSqliteStoreFromDB(shared)
+		if err != nil {
+			return nil, fmt.Errorf("初始化 sqlite 存储失败: %w", err)
+		}
+		return ns, nil
+	}
+	ns, err := sqlite.NewSqliteStore(path)
+	if err != nil {
+		return nil, fmt.Errorf("初始化 sqlite 存储失败: %w", err)
+	}
+	return ns, nil
 }
 
 func (b *AppBuilder) buildProfileManager(cfg *brcfg.Config, loader *cfgloader.ProfileLoader, ks market.KlineStore, promptLoader profile.PromptLoader) *profile.Manager {
@@ -353,7 +375,7 @@ func (b *AppBuilder) buildProfileManager(cfg *brcfg.Config, loader *cfgloader.Pr
 	return profile.NewManager(loader, pipeFactory, promptLoader)
 }
 
-func (b *AppBuilder) setupExitPlans(cfg *brcfg.Config, engine *decision.LegacyEngineAdapter, snapshot cfgloader.ProfileSnapshot) (*exitplan.Registry, *exit.HandlerRegistry, map[string]promptkit.ExitPlanPrompt, map[string]SymbolDetail, error) {
+func (b *AppBuilder) setupExitPlans(cfg *brcfg.Config, engine *decision.DecisionEngine, snapshot cfgloader.ProfileSnapshot) (*exitplan.Registry, *exit.HandlerRegistry, map[string]promptkit.ExitPlanPrompt, map[string]SymbolDetail, error) {
 	var exitRegistry *exitplan.Registry
 	if path := strings.TrimSpace(cfg.AI.ExitPlanPath); path != "" {
 		reg, err := exitplan.NewRegistry(path)
@@ -489,7 +511,7 @@ func WithModelProviders(fn func(context.Context, brcfg.AIConfig, int) ([]provide
 	}
 }
 
-func WithDecisionArtifacts(fn func(context.Context, brcfg.AIConfig, *decision.LegacyEngineAdapter) (*decisionArtifacts, error)) AppBuilderOption {
+func WithDecisionArtifacts(fn func(context.Context, brcfg.AIConfig, *decision.DecisionEngine) (*decisionArtifacts, error)) AppBuilderOption {
 	return func(b *AppBuilder) {
 		if fn != nil {
 			b.decisionArtifactsFn = fn

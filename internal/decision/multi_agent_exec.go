@@ -21,7 +21,7 @@ type agentStageConfig struct {
 	builder    func([]AnalysisContext, brcfg.MultiAgentConfig) string
 }
 
-func (e *LegacyEngineAdapter) runMultiAgents(ctx context.Context, input Context) []AgentInsight {
+func (e *DecisionEngine) runMultiAgents(ctx context.Context, input Context) []AgentInsight {
 	cfg := e.MultiAgent
 	if !cfg.Enabled || len(input.Analysis) == 0 || e.PromptMgr == nil {
 		return nil
@@ -61,7 +61,7 @@ func (e *LegacyEngineAdapter) runMultiAgents(ctx context.Context, input Context)
 	return out
 }
 
-func (e *LegacyEngineAdapter) executeAgentStage(ctx context.Context, stage agentStageConfig, ctxs []AnalysisContext, cfg brcfg.MultiAgentConfig) AgentInsight {
+func (e *DecisionEngine) executeAgentStage(ctx context.Context, stage agentStageConfig, ctxs []AnalysisContext, cfg brcfg.MultiAgentConfig) AgentInsight {
 	tpl := strings.TrimSpace(e.loadTemplate(stage.tplName))
 	if tpl == "" {
 		return AgentInsight{}
@@ -111,7 +111,7 @@ func (e *LegacyEngineAdapter) executeAgentStage(ctx context.Context, stage agent
 	return ins
 }
 
-func (e *LegacyEngineAdapter) lookupPreviousAgentOutput(ctx context.Context, ctxs []AnalysisContext, stage, providerID string) string {
+func (e *DecisionEngine) lookupPreviousAgentOutput(ctx context.Context, ctxs []AnalysisContext, stage, providerID string) string {
 	if e == nil || e.AgentHistory == nil {
 		return ""
 	}
@@ -173,7 +173,7 @@ func appendPreviousAgentOutput(user, stage, providerID, previous string) string 
 	return strings.TrimSpace(b.String())
 }
 
-func (e *LegacyEngineAdapter) findAgentProvider(preferred string) provider.ModelProvider {
+func (e *DecisionEngine) findAgentProvider(preferred string) provider.ModelProvider {
 	if len(e.Providers) == 0 {
 		return nil
 	}
@@ -194,7 +194,7 @@ func (e *LegacyEngineAdapter) findAgentProvider(preferred string) provider.Model
 	return nil
 }
 
-func (e *LegacyEngineAdapter) invokeAgentProvider(ctx context.Context, p provider.ModelProvider, system, user string) (string, error) {
+func (e *DecisionEngine) invokeAgentProvider(ctx context.Context, p provider.ModelProvider, system, user string) (string, error) {
 	if p == nil {
 		return "", fmt.Errorf("agent provider 未配置")
 	}
@@ -211,7 +211,7 @@ func (e *LegacyEngineAdapter) invokeAgentProvider(ctx context.Context, p provide
 	return p.Call(ctx, payload)
 }
 
-func (e *LegacyEngineAdapter) emitAgentWarning(stage, providerID, reason string) bool {
+func (e *DecisionEngine) emitAgentWarning(stage, providerID, reason string) bool {
 	reason = strings.TrimSpace(reason)
 	if reason == "" {
 		return false

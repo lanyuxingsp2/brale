@@ -527,6 +527,7 @@ func (t *Trader) handleOrderResult(payload []byte) error {
 	if err := json.Unmarshal(payload, &res); err != nil {
 		return fmt.Errorf("failed to unmarshal order result: %w", err)
 	}
+	symbol := normalizeSymbol(res.Symbol)
 
 	if res.Error != "" {
 		logger.Errorf("Async Execution Failed for %s: %s", res.Symbol, res.Error)
@@ -542,14 +543,14 @@ func (t *Trader) handleOrderResult(payload []byte) error {
 		return t.processOpenSuccess(res)
 	case OrderActionClose:
 		return t.processCloseSuccess(res)
-	default:
-		logger.Warnf("OrderResult missing action for %s, inferring by state", res.Symbol)
-		if _, exists := t.state.Positions[res.Symbol]; !exists {
-			return t.processOpenSuccess(res)
+		default:
+			logger.Warnf("OrderResult missing action for %s, inferring by state", res.Symbol)
+			if _, exists := t.state.Positions[symbol]; !exists {
+				return t.processOpenSuccess(res)
+			}
+			return t.processCloseSuccess(res)
 		}
-		return t.processCloseSuccess(res)
 	}
-}
 
 func (t *Trader) processOpenSuccess(res OrderResultPayload) error {
 	logger.Infof("Executor reported open success for %s (trade=%s)，等待 freqtrade webhook 对帐", res.Symbol, res.TradeID)
@@ -582,12 +583,16 @@ func (t *Trader) handlePriceUpdate(payload []byte) error {
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return fmt.Errorf("handlePriceUpdate: failed to unmarshal: %v", err)
 	}
-
-	if _, ok := t.state.Positions[p.Symbol]; !ok {
+	symbol := normalizeSymbol(p.Symbol)
+	if symbol == "" {
 		return nil
 	}
 
-	tradeIDStr := t.state.TradeIDBySymbol(p.Symbol)
+	if _, ok := t.state.Positions[symbol]; !ok {
+		return nil
+	}
+
+	tradeIDStr := t.state.TradeIDBySymbol(symbol)
 	if tradeIDStr == "" {
 		return nil
 	}
@@ -631,6 +636,10 @@ func (t *Trader) handlePlanEvent(payload []byte) error {
 	if symbol == "" {
 		return fmt.Errorf("handlePlanEvent: symbol not found for TradeID %d", p.TradeID)
 	}
+	symbol = normalizeSymbol(symbol)
+	if symbol == "" {
+		return fmt.Errorf("handlePlanEvent: invalid symbol for TradeID %d", p.TradeID)
+	}
 
 	logger.Infof("Trader: Plan Event %s type=%s", symbol, p.EventType)
 
@@ -669,19 +678,21 @@ func (t *Trader) handleSignalExit(payload []byte, traceID string) error {
 		return fmt.Errorf("failed to unmarshal signal exit: %w", err)
 	}
 
-	if p.Symbol == "" || p.Side == "" {
+	symbol := normalizeSymbol(p.Symbol)
+	if symbol == "" || p.Side == "" {
 		return fmt.Errorf("signal exit missing symbol/side")
 	}
+	p.Symbol = symbol
 
 	logger.Infof("Trader: Signal Exit %s side=%s ratio=%.2f (async)", p.Symbol, p.Side, p.CloseRatio)
 
 	amount := 0.0
 	if p.CloseRatio > 0 {
-		pos := t.state.Positions[strings.ToUpper(p.Symbol)]
+		pos := t.state.Positions[symbol]
 		amount = t.calcCloseAmount(pos, p.CloseRatio, p.IsInitialRatio)
 	}
 
-	tradeID := t.tradeIDForSymbol(p.Symbol)
+	tradeID := t.tradeIDForSymbol(symbol)
 	t.dispatchClose(p.Symbol, p.Side, amount, traceID, "signal_exit", tradeID, p)
 	return nil
 }
@@ -701,6 +712,7 @@ func (t *Trader) calcCloseAmount(pos *exchange.Position, ratio float64, isInitia
 //   - Sends an EvtOrderResult event back to the actor loop upon completion (success or failure).
 //     This ensures all state updates happen strictly within the actor loop, maintaining consistency.
 func (t *Trader) dispatchClose(symbol, side string, amount float64, traceID, reason, tradeID string, original interface{}) {
+	symbol = normalizeSymbol(symbol)
 	if symbol == "" || side == "" {
 		logger.Warnf("dispatchClose skipped: missing symbol/side (symbol=%s side=%s)", symbol, side)
 		return
@@ -711,7 +723,7 @@ func (t *Trader) dispatchClose(symbol, side string, amount float64, traceID, rea
 	if tradeID == "" {
 		tradeID = t.tradeIDForSymbol(symbol)
 	}
-	pos := t.state.Positions[strings.ToUpper(symbol)]
+	pos := t.state.Positions[symbol]
 	remain := 0.0
 	initAmt := 0.0
 	entry := 0.0
@@ -770,11 +782,15 @@ func (t *Trader) tradeIDForSymbol(symbol string) string {
 	if t.state == nil {
 		return ""
 	}
+	symbol = normalizeSymbol(symbol)
+	if symbol == "" {
+		return ""
+	}
 	if id := t.state.TradeIDBySymbol(symbol); id != "" {
 		return id
 	}
 	for tradeID, sym := range t.state.ByTradeID {
-		if sym == symbol {
+		if normalizeSymbol(sym) == symbol {
 			return tradeID
 		}
 	}

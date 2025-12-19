@@ -674,33 +674,77 @@ func (s *DecisionLogStore) LatestAgentOutput(ctx context.Context, symbol, stage,
 	if s == nil {
 		return "", fmt.Errorf("decision log store 未初始化")
 	}
+	key, err := normalizeAgentOutputKey(symbol, stage, providerID)
+	if err != nil {
+		return "", err
+	}
+	if out, ok := s.getAgentOutputCache(key); ok {
+		return out, nil
+	}
+	if ctx != nil && ctx.Err() != nil {
+		return "", nil
+	}
+	out, err := s.queryLatestAgentOutput(ctx, key)
+	if err != nil || out == "" {
+		return out, err
+	}
+	s.putAgentOutputCache(key, out)
+	return out, nil
+}
+
+func normalizeAgentOutputKey(symbol, stage, providerID string) (agentOutputCacheKey, error) {
 	symbol = strings.ToUpper(strings.TrimSpace(symbol))
 	stage = strings.TrimSpace(stage)
 	providerID = strings.TrimSpace(providerID)
 	if symbol == "" {
-		return "", fmt.Errorf("symbol 不能为空")
+		return agentOutputCacheKey{}, fmt.Errorf("symbol 不能为空")
 	}
 	if stage == "" {
-		return "", fmt.Errorf("stage 不能为空")
+		return agentOutputCacheKey{}, fmt.Errorf("stage 不能为空")
 	}
 	if providerID == "" {
-		return "", fmt.Errorf("provider_id 不能为空")
+		return agentOutputCacheKey{}, fmt.Errorf("provider_id 不能为空")
 	}
 	if !strings.HasPrefix(stage, "agent:") {
 		stage = "agent:" + stage
 	}
+	return agentOutputCacheKey{Symbol: symbol, Stage: stage, ProviderID: providerID}, nil
+}
+
+func (s *DecisionLogStore) getAgentOutputCache(key agentOutputCacheKey) (string, bool) {
 	s.agentCacheMu.RLock()
-	if s.agentOutputCache != nil {
-		if hit, ok := s.agentOutputCache[agentOutputCacheKey{Symbol: symbol, Stage: stage, ProviderID: providerID}]; ok && strings.TrimSpace(hit.Output) != "" {
-			out := strings.TrimSpace(hit.Output)
-			s.agentCacheMu.RUnlock()
-			return out, nil
-		}
+	defer s.agentCacheMu.RUnlock()
+	if s.agentOutputCache == nil {
+		return "", false
 	}
-	s.agentCacheMu.RUnlock()
-	if ctx != nil && ctx.Err() != nil {
-		return "", nil
+	hit, ok := s.agentOutputCache[key]
+	if !ok {
+		return "", false
 	}
+	out := strings.TrimSpace(hit.Output)
+	if out == "" {
+		return "", false
+	}
+	return out, true
+}
+
+func (s *DecisionLogStore) putAgentOutputCache(key agentOutputCacheKey, out string) {
+	out = strings.TrimSpace(out)
+	if out == "" {
+		return
+	}
+	s.agentCacheMu.Lock()
+	defer s.agentCacheMu.Unlock()
+	if s.agentOutputCache == nil {
+		s.agentOutputCache = make(map[agentOutputCacheKey]agentOutputCacheEntry)
+	}
+	prev, ok := s.agentOutputCache[key]
+	if !ok || prev.TS <= 0 {
+		s.agentOutputCache[key] = agentOutputCacheEntry{Output: out, TS: time.Now().UnixMilli()}
+	}
+}
+
+func (s *DecisionLogStore) queryLatestAgentOutput(ctx context.Context, key agentOutputCacheKey) (string, error) {
 	s.mu.Lock()
 	db := s.db
 	s.mu.Unlock()
@@ -710,7 +754,7 @@ func (s *DecisionLogStore) LatestAgentOutput(ctx context.Context, symbol, stage,
 	row := db.QueryRowContext(ctx, `SELECT raw_output FROM live_decision_logs
 		WHERE stage = ? AND provider_id = ? AND symbols LIKE ? AND raw_output IS NOT NULL AND raw_output != ''
 		ORDER BY ts DESC, id DESC
-		LIMIT 1`, stage, providerID, symbolLikePattern(symbol))
+		LIMIT 1`, key.Stage, key.ProviderID, symbolLikePattern(key.Symbol))
 	var raw sql.NullString
 	if err := row.Scan(&raw); err != nil {
 		if err == sql.ErrNoRows {
@@ -718,21 +762,7 @@ func (s *DecisionLogStore) LatestAgentOutput(ctx context.Context, symbol, stage,
 		}
 		return "", err
 	}
-	out := strings.TrimSpace(raw.String)
-	if out == "" {
-		return "", nil
-	}
-	s.agentCacheMu.Lock()
-	if s.agentOutputCache == nil {
-		s.agentOutputCache = make(map[agentOutputCacheKey]agentOutputCacheEntry)
-	}
-	key := agentOutputCacheKey{Symbol: symbol, Stage: stage, ProviderID: providerID}
-	prev, ok := s.agentOutputCache[key]
-	if !ok || prev.TS <= 0 {
-		s.agentOutputCache[key] = agentOutputCacheEntry{Output: out, TS: time.Now().UnixMilli()}
-	}
-	s.agentCacheMu.Unlock()
-	return out, nil
+	return strings.TrimSpace(raw.String), nil
 }
 
 func (s *DecisionLogStore) ListDecisionsByTraceIDs(ctx context.Context, traceIDs []string) (map[string][]DecisionLogRecord, error) {
@@ -805,31 +835,40 @@ func (o *DecisionLogObserver) AfterDecide(ctx context.Context, trace decision.De
 		Positions:  cloneSnapshots(trace.Positions),
 	}
 	for _, out := range trace.Outputs {
-		rec := base
-		rec.ProviderID = out.ProviderID
-		rec.Stage = "provider"
-		if sys := strings.TrimSpace(out.SystemPrompt); sys != "" {
-			rec.System = sys
-		}
-		if usr := strings.TrimSpace(out.UserPrompt); usr != "" {
-			rec.User = usr
-		}
-		rec.RawOutput = out.Raw
-		rec.RawJSON = out.Parsed.RawJSON
-		rec.Meta = out.Parsed.MetaSummary
-		rec.Decisions = append([]decision.Decision(nil), out.Parsed.Decisions...)
-		rec.Symbols = mergeSymbolLists(collectSymbols(rec.Decisions), candidateSymbols)
-		rec.Images = attachmentsFromProviderImages(out.Images)
-		rec.VisionSupported = out.VisionEnabled
-		rec.ImageCount = len(out.Images)
-		rec.Note = "provider"
-		if out.Err != nil {
-			rec.Error = out.Err.Error()
-		}
-		if _, err := o.store.Insert(ctx, rec); err != nil {
-			logger.Warnf("写入决策日志失败(provider): %v", err)
-		}
+		o.logProviderDecision(ctx, base, out, candidateSymbols)
 	}
+	o.logFinalDecision(ctx, base, trace, candidateSymbols)
+	o.logAgentInsights(ctx, base, trace.AgentInsights, candidateSymbols)
+}
+
+func (o *DecisionLogObserver) logProviderDecision(ctx context.Context, base DecisionLogRecord, out decision.ModelOutput, candidateSymbols []string) {
+	rec := base
+	rec.ProviderID = out.ProviderID
+	rec.Stage = "provider"
+	if sys := strings.TrimSpace(out.SystemPrompt); sys != "" {
+		rec.System = sys
+	}
+	if usr := strings.TrimSpace(out.UserPrompt); usr != "" {
+		rec.User = usr
+	}
+	rec.RawOutput = out.Raw
+	rec.RawJSON = out.Parsed.RawJSON
+	rec.Meta = out.Parsed.MetaSummary
+	rec.Decisions = append([]decision.Decision(nil), out.Parsed.Decisions...)
+	rec.Symbols = mergeSymbolLists(collectSymbols(rec.Decisions), candidateSymbols)
+	rec.Images = attachmentsFromProviderImages(out.Images)
+	rec.VisionSupported = out.VisionEnabled
+	rec.ImageCount = len(out.Images)
+	rec.Note = "provider"
+	if out.Err != nil {
+		rec.Error = out.Err.Error()
+	}
+	if _, err := o.store.Insert(ctx, rec); err != nil {
+		logger.Warnf("写入决策日志失败(provider): %v", err)
+	}
+}
+
+func (o *DecisionLogObserver) logFinalDecision(ctx context.Context, base DecisionLogRecord, trace decision.DecisionTrace, candidateSymbols []string) {
 	finalRec := base
 	finalRec.Stage = "final"
 	finalRec.Note = "final"
@@ -857,34 +896,35 @@ func (o *DecisionLogObserver) AfterDecide(ctx context.Context, trace decision.De
 	if _, err := o.store.Insert(ctx, finalRec); err != nil {
 		logger.Warnf("写入决策日志失败(final): %v", err)
 	}
-	if len(trace.AgentInsights) > 0 {
-		for _, ins := range trace.AgentInsights {
-			stage := strings.TrimSpace(ins.Stage)
-			if stage == "" {
-				continue
-			}
-			rec := base
-			rec.Stage = "agent:" + stage
-			rec.ProviderID = ins.ProviderID
-			if sys := strings.TrimSpace(ins.System); sys != "" {
-				rec.System = sys
-			}
-			if usr := strings.TrimSpace(ins.User); usr != "" {
-				rec.User = usr
-			}
-			rec.RawOutput = ins.Output
-			rec.RawJSON = ""
-			rec.Meta = ""
-			rec.Decisions = nil
-			rec.Symbols = mergeSymbolLists(nil, candidateSymbols)
-			rec.Note = "agent"
-			if ins.Warned {
-				rec.Note += "|warned"
-			}
-			rec.Error = ins.Error
-			if _, err := o.store.Insert(ctx, rec); err != nil {
-				logger.Warnf("写入决策日志失败(agent:%s): %v", stage, err)
-			}
+}
+
+func (o *DecisionLogObserver) logAgentInsights(ctx context.Context, base DecisionLogRecord, insights []decision.AgentInsight, candidateSymbols []string) {
+	for _, ins := range insights {
+		stage := strings.TrimSpace(ins.Stage)
+		if stage == "" {
+			continue
+		}
+		rec := base
+		rec.Stage = "agent:" + stage
+		rec.ProviderID = ins.ProviderID
+		if sys := strings.TrimSpace(ins.System); sys != "" {
+			rec.System = sys
+		}
+		if usr := strings.TrimSpace(ins.User); usr != "" {
+			rec.User = usr
+		}
+		rec.RawOutput = ins.Output
+		rec.RawJSON = ""
+		rec.Meta = ""
+		rec.Decisions = nil
+		rec.Symbols = mergeSymbolLists(nil, candidateSymbols)
+		rec.Note = "agent"
+		if ins.Warned {
+			rec.Note += "|warned"
+		}
+		rec.Error = ins.Error
+		if _, err := o.store.Insert(ctx, rec); err != nil {
+			logger.Warnf("写入决策日志失败(agent:%s): %v", stage, err)
 		}
 	}
 }

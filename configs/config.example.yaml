@@ -9,6 +9,9 @@ app:
   llm_log_path: "/data/logs/brale-llm.log" # LLM 调用日志输出路径（建议挂载到持久化目录）
   llm_dump_payload: false         # 是否落盘保存完整请求/响应 payload（可能包含敏感信息）
 
+kline:
+  max_cached: 360                 # K线最大缓存条数，应 >= 最大 analysis_slice + slice_drop_tail
+
 market:
   active_source: "binance"        # 行情源名称：需与 sources[].name 对应
   enabled: true                   # 是否启用行情/指标管线（关闭则不会拉取 K 线/指标）

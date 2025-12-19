@@ -220,76 +220,15 @@ func (e *LiveEngine) notifyOpen(ctx context.Context, d decision.Decision, entryP
 	if e.Notifier == nil {
 		return
 	}
-	rrVal := 0.0
-	if entryPrice > 0 {
-		var risk, reward float64
-		switch d.Action {
-		case "open_long":
-			risk = entryPrice - d.StopLoss
-			reward = d.TakeProfit - entryPrice
-		case "open_short":
-			risk = d.StopLoss - entryPrice
-			reward = entryPrice - d.TakeProfit
-		}
-		if risk > 0 && reward > 0 {
-			rrVal = reward / risk
-		}
-	}
-
-	if entryPrice > 0 {
-		if rrVal > 0 {
-			logger.Infof("开仓详情: %s %s entry=%.4f RR=%.2f sl=%.4f tp=%.4f",
-				d.Symbol, d.Action, entryPrice, rrVal, d.StopLoss, d.TakeProfit)
-		} else {
-			logger.Infof("开仓详情: %s %s entry=%.4f sl=%.4f tp=%.4f",
-				d.Symbol, d.Action, entryPrice, d.StopLoss, d.TakeProfit)
-		}
-	}
-
+	rrVal := computeRiskReward(d.Action, entryPrice, d.StopLoss, d.TakeProfit)
+	logOpenDetails(d, entryPrice, rrVal)
 	actionCN := renderActionCN(d.Action)
 	side := deriveSide(d.Action)
 	if actionCN == "" {
 		actionCN = d.Action
 	}
-	sections := make([]notifier.MessageSection, 0, 4)
-	priceLines := make([]string, 0, 3)
-	if entryPrice > 0 {
-		iv := ""
-		if validateIv != "" {
-			iv = " · 周期 " + strings.ToUpper(validateIv)
-		}
-		priceLines = append(priceLines, fmt.Sprintf("当前价格 %.4f%s", entryPrice, iv))
-	}
-	if rrVal > 0 {
-		priceLines = append(priceLines, fmt.Sprintf("即时风险回报：%.2f", rrVal))
-	}
-	if len(priceLines) > 0 {
-		sections = append(sections, notifier.MessageSection{Title: "行情", Lines: priceLines})
-	}
-	tradeLines := make([]string, 0, 4)
-	if d.Leverage > 0 {
-		tradeLines = append(tradeLines, fmt.Sprintf("杠杆 %dx", d.Leverage))
-	}
-	if d.PositionSizeUSD > 0 {
-		tradeLines = append(tradeLines, fmt.Sprintf("仓位 %.0f USDT", d.PositionSizeUSD))
-	}
-	if d.Confidence > 0 {
-		tradeLines = append(tradeLines, fmt.Sprintf("模型信心 %d%%", d.Confidence))
-	}
-	if len(tradeLines) > 0 {
-		sections = append(sections, notifier.MessageSection{Title: "仓位", Lines: tradeLines})
-	}
 
-	if plan := e.renderExitPlanSummary(d.ExitPlan, d.ExitPlanVersion, entryPrice, side); plan != "" {
-		planLines := strings.Split(plan, "\n")
-		sections = append(sections, notifier.MessageSection{Title: "策略", Lines: planLines})
-		logger.Infof("策略详情：\n%s", plan)
-	}
-
-	if reason := strings.TrimSpace(d.Reasoning); reason != "" {
-		reasonLines := strings.Split(reason, "\n")
-		sections = append(sections, notifier.MessageSection{Title: "触发理由", Lines: reasonLines})
-	}
+	sections := e.buildOpenSections(d, entryPrice, rrVal, validateIv, side)
 	msg := notifier.StructuredMessage{
 		Icon:      "🚀",
 		Title:     fmt.Sprintf("信号触发：%s %s", strings.ToUpper(strings.TrimSpace(d.Symbol)), actionCN),
@@ -299,6 +238,95 @@ func (e *LiveEngine) notifyOpen(ctx context.Context, d decision.Decision, entryP
 	if err := e.Notifier.SendStructured(msg); err != nil {
 		logger.Warnf("Telegram 推送失败: %v", err)
 	}
+}
+
+func computeRiskReward(action string, entryPrice, stopLoss, takeProfit float64) float64 {
+	if entryPrice <= 0 {
+		return 0
+	}
+	var risk, reward float64
+	switch action {
+	case "open_long":
+		risk = entryPrice - stopLoss
+		reward = takeProfit - entryPrice
+	case "open_short":
+		risk = stopLoss - entryPrice
+		reward = entryPrice - takeProfit
+	}
+	if risk > 0 && reward > 0 {
+		return reward / risk
+	}
+	return 0
+}
+
+func logOpenDetails(d decision.Decision, entryPrice, rrVal float64) {
+	if entryPrice <= 0 {
+		return
+	}
+	if rrVal > 0 {
+		logger.Infof("开仓详情: %s %s entry=%.4f RR=%.2f sl=%.4f tp=%.4f",
+			d.Symbol, d.Action, entryPrice, rrVal, d.StopLoss, d.TakeProfit)
+		return
+	}
+	logger.Infof("开仓详情: %s %s entry=%.4f sl=%.4f tp=%.4f",
+		d.Symbol, d.Action, entryPrice, d.StopLoss, d.TakeProfit)
+}
+
+func (e *LiveEngine) buildOpenSections(d decision.Decision, entryPrice, rrVal float64, validateIv, side string) []notifier.MessageSection {
+	sections := make([]notifier.MessageSection, 0, 4)
+
+	if lines := buildPriceLines(entryPrice, rrVal, validateIv); len(lines) > 0 {
+		sections = append(sections, notifier.MessageSection{Title: "行情", Lines: lines})
+	}
+	if lines := buildTradeLines(d); len(lines) > 0 {
+		sections = append(sections, notifier.MessageSection{Title: "仓位", Lines: lines})
+	}
+	if plan := e.renderExitPlanSummary(d.ExitPlan, d.ExitPlanVersion, entryPrice, side); plan != "" {
+		planLines := strings.Split(plan, "\n")
+		sections = append(sections, notifier.MessageSection{Title: "策略", Lines: planLines})
+		logger.Infof("策略详情：\n%s", plan)
+	}
+	if lines := buildReasonLines(d.Reasoning); len(lines) > 0 {
+		sections = append(sections, notifier.MessageSection{Title: "触发理由", Lines: lines})
+	}
+	return sections
+}
+
+func buildPriceLines(entryPrice, rrVal float64, validateIv string) []string {
+	lines := make([]string, 0, 3)
+	if entryPrice > 0 {
+		iv := ""
+		if validateIv != "" {
+			iv = " · 周期 " + strings.ToUpper(validateIv)
+		}
+		lines = append(lines, fmt.Sprintf("当前价格 %.4f%s", entryPrice, iv))
+	}
+	if rrVal > 0 {
+		lines = append(lines, fmt.Sprintf("即时风险回报：%.2f", rrVal))
+	}
+	return lines
+}
+
+func buildTradeLines(d decision.Decision) []string {
+	lines := make([]string, 0, 4)
+	if d.Leverage > 0 {
+		lines = append(lines, fmt.Sprintf("杠杆 %dx", d.Leverage))
+	}
+	if d.PositionSizeUSD > 0 {
+		lines = append(lines, fmt.Sprintf("仓位 %.0f USDT", d.PositionSizeUSD))
+	}
+	if d.Confidence > 0 {
+		lines = append(lines, fmt.Sprintf("模型信心 %d%%", d.Confidence))
+	}
+	return lines
+}
+
+func buildReasonLines(reason string) []string {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return nil
+	}
+	return strings.Split(reason, "\n")
 }
 
 func (e *LiveEngine) notifyEntryTimeout(ctx context.Context, d decision.Decision) {

@@ -24,7 +24,7 @@ profiles:
         timeout_seconds: 5                  # 超时（秒）
         params:
           intervals: ["15m", "1h", "4h"]    # 拉取的周期列表
-          limit: 240                        # 每个周期最多拉取多少根（需 >= analysis_slice + slice_drop_tail）
+          limit: 360                        # 每个周期最多拉取多少根（需 >= analysis_slice + slice_drop_tail）
       - name: ema_trend                     # EMA 趋势（支持多周期共振）
         stage: 1                            # stage=1：指标计算阶段
         configs:

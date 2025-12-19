@@ -64,10 +64,17 @@ type PlanEvent struct {
 	Details       map[string]any
 }
 
+// FinalTakeProfit means a TP-class component triggered an exit.
+// Does NOT imply the trade was profitable. Use entry/exit price for P&L.
+
+// FinalStopLoss means a SL-class component triggered an exit.
+// Does NOT imply the trade was a loss. Use entry/exit price for P&L.
+
 const (
-	PlanEventTypeTierHit         = "tier_hit"          // Multi-tier: one tier filled
-	PlanEventTypeStopLoss        = "stop_loss"         // Intermediate stop adjustment
-	PlanEventTypeTakeProfit      = "take_profit"       // Intermediate TP adjustment
+	PlanEventTypeTierHit    = "tier_hit"    // Multi-tier: one tier filled
+	PlanEventTypeStopLoss   = "stop_loss"   // Intermediate stop adjustment
+	PlanEventTypeTakeProfit = "take_profit" // Intermediate TP adjustment
+
 	PlanEventTypeFinalStopLoss   = "final_stop_loss"   // Close position at stop
 	PlanEventTypeFinalTakeProfit = "final_take_profit" // Close position at TP
 	PlanEventTypeAdjust          = "plan_adjust"       // Manual param change

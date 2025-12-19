@@ -23,24 +23,49 @@ type OpenAIChatClient struct {
 }
 
 func (c *OpenAIChatClient) Call(ctx context.Context, payload ChatPayload) (string, error) {
+	ctx = ensureCtx(ctx)
+	timeout := c.ensureTimeout()
+	maxRetries := normalizeRetries(c.MaxRetries)
+	url := c.chatCompletionsURL()
+
+	bodyBytes := buildChatBodyBytes(c.Model, payload)
+	logger.LogLLMPayload(c.Model, string(bodyBytes))
+
+	httpc := &http.Client{Timeout: timeout}
+	return c.doChatCompletions(ctx, httpc, url, bodyBytes, maxRetries)
+}
+
+func ensureCtx(ctx context.Context) context.Context {
 	if ctx == nil {
-		ctx = context.Background()
+		return context.Background()
 	}
+	return ctx
+}
+
+func normalizeRetries(v int) int {
+	if v <= 0 {
+		return 2
+	}
+	return v
+}
+
+func (c *OpenAIChatClient) ensureTimeout() time.Duration {
 	if c.Timeout <= 0 {
 		c.Timeout = 60 * time.Second
 	}
-	maxRetries := c.MaxRetries
-	if maxRetries <= 0 {
-		maxRetries = 2
-	}
+	return c.Timeout
+}
 
+func (c *OpenAIChatClient) chatCompletionsURL() string {
 	url := strings.TrimRight(c.BaseURL, "/")
 	if url == "" {
 		url = "https://api.openai.com/v1"
 	}
 	url = strings.TrimSuffix(url, "/chat/completions")
-	url = url + "/chat/completions"
+	return url + "/chat/completions"
+}
 
+func buildChatBodyBytes(model string, payload ChatPayload) []byte {
 	messages := make([]map[string]any, 0, 3)
 	if payload.System != "" {
 		messages = append(messages, map[string]any{
@@ -48,15 +73,14 @@ func (c *OpenAIChatClient) Call(ctx context.Context, payload ChatPayload) (strin
 			"content": payload.System,
 		})
 	}
-	userContent := buildUserContent(payload)
-	messages = append(messages, userContent)
+	messages = append(messages, buildUserContent(payload))
 
 	maxTokens := payload.MaxTokens
 	if maxTokens <= 0 {
 		maxTokens = 4096
 	}
 	body := map[string]any{
-		"model":       c.Model,
+		"model":       model,
 		"messages":    messages,
 		"temperature": 0.4,
 		"max_tokens":  maxTokens,
@@ -65,15 +89,19 @@ func (c *OpenAIChatClient) Call(ctx context.Context, payload ChatPayload) (strin
 		body["response_format"] = map[string]string{"type": "json_object"}
 	}
 	b, _ := json.Marshal(body)
-	logger.LogLLMPayload(c.Model, string(b))
+	return b
+}
 
-	httpc := &http.Client{Timeout: c.Timeout}
+func (c *OpenAIChatClient) doChatCompletions(ctx context.Context, httpc *http.Client, url string, body []byte, maxRetries int) (string, error) {
 	var lastErr error
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt == 0 {
-			logger.Debugf("[AI] 请求: POST %s headers=%v body=%s", url, redactHeaders(c.headersForLog()), string(b))
+			logger.Debugf("[AI] 请求: POST %s headers=%v body=%s", url, redactHeaders(c.headersForLog()), string(body))
 		}
-		req, _ := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(b))
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+		if err != nil {
+			return "", err
+		}
 		for k, v := range c.headers() {
 			req.Header.Set(k, v)
 		}
@@ -82,39 +110,48 @@ func (c *OpenAIChatClient) Call(ctx context.Context, payload ChatPayload) (strin
 			lastErr = err
 			break
 		}
+
 		if resp.StatusCode/100 == 2 {
-			var r struct {
-				Choices []struct {
-					Message struct {
-						Content string `json:"content"`
-					} `json:"message"`
-				} `json:"choices"`
-				}
-				derr := json.NewDecoder(resp.Body).Decode(&r)
-				if cerr := resp.Body.Close(); cerr != nil {
-					logger.Debugf("[AI] response body close failed: %v", cerr)
-				}
-				if derr != nil {
-					lastErr = derr
-					break
-				}
-			if len(r.Choices) == 0 {
-				lastErr = fmt.Errorf("empty choices")
+			content, err := decodeChatContent(resp)
+			if err != nil {
+				lastErr = err
 				break
 			}
-			return r.Choices[0].Message.Content, nil
+			return content, nil
 		}
+
 		msg := parseError(resp)
+		lastErr = fmt.Errorf("status=%d: %s", resp.StatusCode, msg)
 		if shouldRetry(resp.StatusCode) && attempt < maxRetries {
 			wait := parseRetryAfter(resp.Header.Get("Retry-After"), attempt)
 			time.Sleep(wait)
-			lastErr = fmt.Errorf("status=%d: %s", resp.StatusCode, msg)
 			continue
 		}
-		lastErr = fmt.Errorf("status=%d: %s", resp.StatusCode, msg)
 		break
 	}
 	return "", lastErr
+}
+
+func decodeChatContent(resp *http.Response) (string, error) {
+	defer func() {
+		if cerr := resp.Body.Close(); cerr != nil {
+			logger.Debugf("[AI] response body close failed: %v", cerr)
+		}
+	}()
+	var r struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+		return "", err
+	}
+	if len(r.Choices) == 0 {
+		return "", fmt.Errorf("empty choices")
+	}
+	return r.Choices[0].Message.Content, nil
 }
 
 func (c *OpenAIChatClient) headers() map[string]string {

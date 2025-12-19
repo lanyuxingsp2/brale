@@ -8,8 +8,8 @@ import (
 	"brale/internal/types"
 )
 
-func (e *LegacyEngineAdapter) renderAccountOverview(account types.AccountSnapshot) string {
-	var b strings.Builder
+func (b *DefaultPromptBuilder) renderAccountOverview(account types.AccountSnapshot) string {
+	var sb strings.Builder
 	if account.Total <= 0 && account.Available <= 0 && account.Used <= 0 {
 		return ""
 	}
@@ -17,7 +17,7 @@ func (e *LegacyEngineAdapter) renderAccountOverview(account types.AccountSnapsho
 	if currency == "" {
 		currency = "USDT"
 	}
-	b.WriteString("\n## 账户资金\n")
+	sb.WriteString("\n## 账户资金\n")
 	line := fmt.Sprintf("- 权益: %.2f %s", account.Total, currency)
 	if account.Available > 0 {
 		line += fmt.Sprintf(" · 可用: %.2f", account.Available)
@@ -25,16 +25,16 @@ func (e *LegacyEngineAdapter) renderAccountOverview(account types.AccountSnapsho
 	if account.Used > 0 {
 		line += fmt.Sprintf(" · 已使用: %.2f", account.Used)
 	}
-	b.WriteString(line + "\n")
-	return b.String()
+	sb.WriteString(line + "\n")
+	return sb.String()
 }
 
-func (e *LegacyEngineAdapter) renderPositionDetails(positions []PositionSnapshot) string {
+func (b *DefaultPromptBuilder) renderPositionDetails(positions []PositionSnapshot) string {
 	if len(positions) == 0 {
 		return "\n## 当前持仓\n当前无持仓，只可返回 hold open_long open_short指令。\n"
 	}
-	var b strings.Builder
-	b.WriteString("\n## 当前持仓\n")
+	var sb strings.Builder
+	sb.WriteString("\n## 当前持仓\n")
 	for _, pos := range positions {
 		line := fmt.Sprintf("- %s %s entry=%.4f",
 			strings.ToUpper(pos.Symbol), strings.ToUpper(pos.Side), pos.EntryPrice)
@@ -50,30 +50,30 @@ func (e *LegacyEngineAdapter) renderPositionDetails(positions []PositionSnapshot
 		if pos.HoldingMs > 0 {
 			line += fmt.Sprintf(" holding=%s", formatutil.Duration(pos.HoldingMs))
 		}
-		b.WriteString(line + "\n")
+		sb.WriteString(line + "\n")
 		if len(pos.PlanSummaries) > 0 {
 			for _, note := range pos.PlanSummaries {
 				msg := strings.TrimSpace(note)
 				if msg == "" {
 					continue
 				}
-				b.WriteString("    → " + msg + "\n")
+				sb.WriteString("    → " + msg + "\n")
 			}
 		}
 		if jsonText := strings.TrimSpace(pos.PlanStateJSON); jsonText != "" {
 			if planText := renderPlanStateSummary(jsonText); planText != "" {
-				b.WriteString(planText)
-				b.WriteString("    提示：只可修改 waiting 阶段的字段，triggered 的阶段请原值返回。\n")
+				sb.WriteString(planText)
+				sb.WriteString("    提示：只可修改 未触达 阶段的字段，已触达 的阶段请原值返回。\n")
 			} else {
-				b.WriteString("    ⚠️ 无法解析策略结构，以下为原始 JSON：\n")
-				b.WriteString("    exit_plan_state_json:\n")
+				sb.WriteString("    ⚠️ 无法解析策略结构，以下为原始 JSON：\n")
+				sb.WriteString("    exit_plan_state_json:\n")
 				lines := strings.Split(jsonText, "\n")
 				for _, line := range lines {
-					b.WriteString("        " + line + "\n")
+					sb.WriteString("        " + line + "\n")
 				}
 			}
 		}
 	}
-	b.WriteString("请结合上述仓位判断是否需要平仓、加仓或调整计划。\n")
-	return b.String()
+	sb.WriteString("请结合上述仓位判断是否需要平仓、加仓或调整计划。\n")
+	return sb.String()
 }

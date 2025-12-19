@@ -77,7 +77,14 @@ func (m *Manager) reconcileExitFillWithFreqtrade(ctx context.Context, msg exchan
 	if baseCtx == nil {
 		baseCtx = context.Background()
 	}
-	statusCtx, cancel := context.WithTimeout(baseCtx, 3*time.Second)
+	if m.syncWithOpenTrade(baseCtx, tradeID, payload) {
+		return
+	}
+	m.fillExitFromHistory(baseCtx, tradeID, payload)
+}
+
+func (m *Manager) syncWithOpenTrade(ctx context.Context, tradeID int, payload *trader.PositionClosedPayload) bool {
+	statusCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	openTrade, err := m.client.GetOpenTrade(statusCtx, tradeID)
 	cancel()
 	switch {
@@ -87,12 +94,17 @@ func (m *Manager) reconcileExitFillWithFreqtrade(ctx context.Context, msg exchan
 			logger.Warnf("freqtrade: trade=%d remaining mismatch，本地=%.4f 远端=%.4f，已使用远端数据", tradeID, payload.RemainingAmount, remoteRemaining)
 			payload.RemainingAmount = remoteRemaining
 		}
-		return
+		return true
 	case err != nil && !errors.Is(err, errTradeNotFound):
 		logger.Warnf("freqtrade: 查询 /status 失败 trade=%d err=%v", tradeID, err)
-		return
+		return true
+	default:
+		return false
 	}
-	historyCtx, cancel := context.WithTimeout(baseCtx, 3*time.Second)
+}
+
+func (m *Manager) fillExitFromHistory(ctx context.Context, tradeID int, payload *trader.PositionClosedPayload) {
+	historyCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	trade, err := m.client.GetTrade(historyCtx, tradeID)
 	cancel()
 	if err != nil {
@@ -105,18 +117,37 @@ func (m *Manager) reconcileExitFillWithFreqtrade(ctx context.Context, msg exchan
 		return
 	}
 	payload.RemainingAmount = 0
+	payload.ClosePrice = pickClosePrice(trade)
+	payload.PnL = pickPnL(trade)
+	payload.PnLPct = pickPnLPct(trade)
+}
+
+func pickClosePrice(trade *Trade) float64 {
 	if trade.CloseRate > 0 {
-		payload.ClosePrice = trade.CloseRate
+		return trade.CloseRate
 	}
-	if trade.CloseProfitAbs != 0 {
-		payload.PnL = trade.CloseProfitAbs
-	} else if trade.ProfitAbs != 0 {
-		payload.PnL = trade.ProfitAbs
+	return 0
+}
+
+func pickPnL(trade *Trade) float64 {
+	switch {
+	case trade.CloseProfitAbs != 0:
+		return trade.CloseProfitAbs
+	case trade.ProfitAbs != 0:
+		return trade.ProfitAbs
+	default:
+		return 0
 	}
-	if trade.CloseProfit != 0 {
-		payload.PnLPct = trade.CloseProfit
-	} else if trade.ProfitRatio != 0 {
-		payload.PnLPct = trade.ProfitRatio
+}
+
+func pickPnLPct(trade *Trade) float64 {
+	switch {
+	case trade.CloseProfit != 0:
+		return trade.CloseProfit
+	case trade.ProfitRatio != 0:
+		return trade.ProfitRatio
+	default:
+		return 0
 	}
 }
 

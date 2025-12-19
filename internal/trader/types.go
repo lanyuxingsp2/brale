@@ -184,5 +184,5 @@ func (s *State) TradeIDBySymbol(symbol string) string {
 	if s == nil || s.SymbolIndex == nil {
 		return ""
 	}
-	return s.SymbolIndex[symbol]
+	return s.SymbolIndex[normalizeSymbol(symbol)]
 }
