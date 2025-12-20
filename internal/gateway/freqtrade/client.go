@@ -110,30 +110,31 @@ func (c *Client) ForceExit(ctx context.Context, payload ForceExitPayload) error 
 }
 
 type Trade struct {
-	ID               int          `json:"trade_id"`
-	Pair             string       `json:"pair"`
-	Side             string       `json:"side"`
-	IsShort          bool         `json:"is_short"`
-	OpenDate         string       `json:"open_date"`
-	CloseDate        string       `json:"close_date"`
-	OpenRate         float64      `json:"open_rate"`
-	CloseRate        float64      `json:"close_rate"`
-	TakeProfit       float64      `json:"take_profit,omitempty"`
-	StopLoss         float64      `json:"stop_loss,omitempty"`
-	Amount           float64      `json:"amount"`
-	AmountRequested  float64      `json:"amount_requested,omitempty"`
-	StakeAmount      float64      `json:"stake_amount"`
-	OpenTradeValue   float64      `json:"open_trade_value,omitempty"`
-	Leverage         float64      `json:"leverage"`
-	OpenOrderID      string       `json:"open_order_id"`
-	CloseOrderID     string       `json:"close_order_id"`
-	IsOpen           bool         `json:"is_open"`
-	CurrentRate      float64      `json:"current_rate"`
-	RealizedProfit   float64      `json:"realized_profit,omitempty"`
-	CloseProfit      float64      `json:"close_profit"`
-	CloseProfitAbs   float64      `json:"close_profit_abs"`
-	LiquidationPrice float64      `json:"liquidation_price,omitempty"`
-	Orders           []TradeOrder `json:"orders,omitempty"`
+	ID                  int          `json:"trade_id"`
+	Pair                string       `json:"pair"`
+	Side                string       `json:"side"`
+	IsShort             bool         `json:"is_short"`
+	OpenDate            string       `json:"open_date"`
+	CloseDate           string       `json:"close_date"`
+	OpenRate            float64      `json:"open_rate"`
+	CloseRate           float64      `json:"close_rate"`
+	TakeProfit          float64      `json:"take_profit,omitempty"`
+	StopLoss            float64      `json:"stop_loss,omitempty"`
+	Amount              float64      `json:"amount"`
+	AmountRequested     float64      `json:"amount_requested,omitempty"`
+	StakeAmount         float64      `json:"stake_amount"`
+	OpenTradeValue      float64      `json:"open_trade_value,omitempty"`
+	Leverage            float64      `json:"leverage"`
+	OpenOrderID         string       `json:"open_order_id"`
+	CloseOrderID        string       `json:"close_order_id"`
+	IsOpen              bool         `json:"is_open"`
+	CurrentRate         float64      `json:"current_rate"`
+	RealizedProfit      float64      `json:"realized_profit,omitempty"`
+	RealizedProfitRatio float64      `json:"realized_profit_ratio,omitempty"`
+	CloseProfit         float64      `json:"close_profit"`
+	CloseProfitAbs      float64      `json:"close_profit_abs"`
+	LiquidationPrice    float64      `json:"liquidation_price,omitempty"`
+	Orders              []TradeOrder `json:"orders,omitempty"`
 
 	ProfitRatio      float64 `json:"profit_ratio"`
 	ProfitAbs        float64 `json:"profit_abs"`

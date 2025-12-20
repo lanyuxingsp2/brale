@@ -115,10 +115,12 @@ func applyOpenPnL(tr *Trade, rec database.LiveOrderRecord) database.LiveOrderRec
 	}
 	if tr.RealizedProfit != 0 {
 		rec.RealizedPnLUSD = ptrFloat(tr.RealizedProfit)
-		if rec.StakeAmount != nil && *rec.StakeAmount != 0 {
-			ratio := tr.RealizedProfit / *rec.StakeAmount
-			rec.RealizedPnLRatio = ptrFloat(ratio)
-		}
+	}
+	if tr.RealizedProfitRatio != 0 {
+		rec.RealizedPnLRatio = ptrFloat(tr.RealizedProfitRatio)
+	} else if rec.RealizedPnLUSD != nil && rec.StakeAmount != nil && *rec.StakeAmount != 0 {
+		ratio := *rec.RealizedPnLUSD / *rec.StakeAmount
+		rec.RealizedPnLRatio = ptrFloat(ratio)
 	}
 	return rec
 }

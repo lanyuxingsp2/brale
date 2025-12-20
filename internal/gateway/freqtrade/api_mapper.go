@@ -272,13 +272,35 @@ func liveOrderToAPIPosition(rec database.LiveOrderRecord, nowMillis int64) excha
 	fillPnL(&out, rec.Status == database.LiveOrderStatusClosed, baseStake, pnlUSD, pnlRatio, derivedUSD, derivedRatio)
 	if rec.Status != database.LiveOrderStatusClosed {
 		realizedUSD := valOrZero(rec.RealizedPnLUSD)
-		// Always set PnLUSD as total (realized + unrealized) for open positions
-		totalUSD := realizedUSD + out.UnrealizedPnLUSD
+		realizedRatio := valOrZero(rec.RealizedPnLRatio)
+		totalUSD := valOrZero(rec.PnLUSD)
+		totalRatio := valOrZero(rec.PnLRatio)
+
+		if realizedUSD == 0 && totalUSD != 0 && out.UnrealizedPnLUSD != 0 {
+			realizedUSD = totalUSD - out.UnrealizedPnLUSD
+		}
+		if realizedRatio == 0 && baseStake > 0 && realizedUSD != 0 {
+			realizedRatio = realizedUSD / baseStake
+		}
+		if out.RealizedPnLUSD == 0 && realizedUSD != 0 {
+			out.RealizedPnLUSD = realizedUSD
+		}
+		if out.RealizedPnLRatio == 0 && realizedRatio != 0 {
+			out.RealizedPnLRatio = realizedRatio
+		}
+
+		if totalUSD == 0 && (realizedUSD != 0 || out.UnrealizedPnLUSD != 0) {
+			totalUSD = realizedUSD + out.UnrealizedPnLUSD
+		}
+		if totalRatio == 0 && baseStake > 0 && totalUSD != 0 {
+			totalRatio = totalUSD / baseStake
+		} else if totalRatio == 0 {
+			totalRatio = out.UnrealizedPnLRatio + realizedRatio
+		}
+
 		out.PnLUSD = totalUSD
-		if baseStake > 0 {
-			out.PnLRatio = totalUSD / baseStake
-		} else if out.PnLRatio == 0 {
-			out.PnLRatio = out.UnrealizedPnLRatio + valOrZero(rec.RealizedPnLRatio)
+		if totalRatio != 0 {
+			out.PnLRatio = totalRatio
 		}
 	}
 

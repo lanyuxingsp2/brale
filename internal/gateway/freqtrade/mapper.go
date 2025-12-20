@@ -73,6 +73,8 @@ func toOrderModel(rec database.LiveOrderRecord) *model.LiveOrderModel {
 		CurrentProfitAbs:  deref(rec.CurrentProfitAbs),
 		UnrealizedRatio:   deref(rec.UnrealizedPnLRatio),
 		UnrealizedUSD:     deref(rec.UnrealizedPnLUSD),
+		RealizedRatio:     deref(rec.RealizedPnLRatio),
+		RealizedUSD:       deref(rec.RealizedPnLUSD),
 		LastStatusSync:    derefUnixMillis(rec.LastStatusSync),
 	}
 }
@@ -124,6 +126,8 @@ func fromOrderModel(m *model.LiveOrderModel) database.LiveOrderRecord {
 		CurrentProfitAbs:   &m.CurrentProfitAbs,
 		UnrealizedPnLRatio: &m.UnrealizedRatio,
 		UnrealizedPnLUSD:   &m.UnrealizedUSD,
+		RealizedPnLRatio:   &m.RealizedRatio,
+		RealizedPnLUSD:     &m.RealizedUSD,
 		LastStatusSync:     lastSync,
 	}
 }

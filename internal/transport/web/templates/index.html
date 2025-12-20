@@ -1178,13 +1178,13 @@
     <script>
         window.__APP_INIT__ = {
             view: "{{ if .InitialView }}{{ .InitialView }}{{ else }}desk{{ end }}",
-            decisionId: {{ if .DecisionID }}{ { .DecisionID } } { { else } } null{ { end } },
-        traceId: { { if .TraceID } } { { printf "%q".TraceID } } { { else } } null{ { end } },
-        tradeId: { { if .TradeID } } { { .TradeID } } { { else } } null{ { end } },
-        symbol: { { if .Symbol } } { { printf "%q".Symbol } } { { else } } ""{ { end } },
-        selectedSymbols: { { if .SelectedSymbols } } { { toJSON.SelectedSymbols } } { { else } } []{ { end } },
-        defaultSymbols: { { toJSON.DefaultSymbols } },
-        symbolDetails: { { toJSON.SymbolDetails } },
+            decisionId: {{ if .DecisionID }}{{ .DecisionID }}{{ else }}null{{ end }},
+        traceId: {{ if .TraceID }}{{ printf "%q" .TraceID }}{{ else }}null{{ end }},
+        tradeId: {{ if .TradeID }}{{ .TradeID }}{{ else }}null{{ end }},
+        symbol: {{ if .Symbol }}{{ printf "%q" .Symbol }}{{ else }}""{{ end }},
+        selectedSymbols: {{ if .SelectedSymbols }}{{ toJSON .SelectedSymbols }}{{ else }}[]{{ end }},
+        defaultSymbols: {{ toJSON .DefaultSymbols }},
+        symbolDetails: {{ toJSON .SymbolDetails }},
         };
     </script>
     <script src="/static/js/admin-app.js"></script>
