@@ -70,6 +70,12 @@ type LiveService struct {
 }
 
 func NewLiveService(p LiveServiceParams) *LiveService {
+	var textNotifier notifier.TextNotifier
+	var structuredNotifier engine.Notifier
+	if p.Telegram != nil {
+		textNotifier = p.Telegram
+		structuredNotifier = p.Telegram
+	}
 
 	var planScheduler *PlanScheduler
 	if p.StrategyStore != nil && p.PlanHandlers != nil && p.ExitPlans != nil {
@@ -78,7 +84,7 @@ func NewLiveService(p LiveServiceParams) *LiveService {
 			Plans:       p.ExitPlans,
 			Handlers:    p.PlanHandlers,
 			ExecManager: p.ExecManager,
-			Notifier:    p.Telegram,
+			Notifier:    textNotifier,
 		})
 	}
 
@@ -130,7 +136,7 @@ func NewLiveService(p LiveServiceParams) *LiveService {
 		PlanHandlers:    p.PlanHandlers,
 		PlanScheduler:   planScheduler,
 		ExitPlanPrompts: p.ExitPlanPrompts,
-		Notifier:        p.Telegram,
+		Notifier:        structuredNotifier,
 	}
 	liveEngine := engine.NewLiveEngine(engParams)
 
