@@ -2,29 +2,29 @@
 
 > **AI-Driven Multi-Agent Quantitative Strategy Engine**
 >
-> *Since it's a performance (trading), I wish you to "Break a leg" (Success/Make a fortune)!*
+> *Since this is a performance (trading), I wish you "Break a leg" (a successful show / big profits)!*
 
 [![Chinese Documentation](https://img.shields.io/badge/lang-中文-red.svg)](doc/README_CN.md)
 [![Go Version](https://img.shields.io/badge/go-1.24.0-blue.svg)](go.mod)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-**Brale** is a quantitative trading system that perfectly decouples **"AI's Deep Thinking"** from **"Quantitative Ultimate Execution"**. It generates high-win-rate decisions through multi-agent collaborative analysis (Trend, Pattern, Momentum) combined with LLMs (GPT, Claude, DeepSeek...), and performs millisecond-level risk alignment via a highly optimized execution engine.
+**Brale** is a quantitative trading system that cleanly decouples **"AI deep thinking"** from **"ultimate quantitative execution."** It generates high-win-rate decisions via multi-agent collaborative analysis (Trend, Pattern, Momentum) combined with LLMs (GPT, Claude, DeepSeek...), and then performs millisecond-level risk alignment through a highly optimized execution engine.
 [Chinese Video Introduction](https://www.bilibili.com/video/BV1Ab2aB2EUY)
 
 ## ✨ Core Features
 
 - 🧠 **Dual-Loop Architecture**:
-  - **Slow Loop**: Triggered by the K-line alignment scheduler, utilizing large models for multi-dimensional deep reasoning.
-  - **Fast Loop**: Driven by the `Plan Scheduler`, providing millisecond-level price monitoring to ensure Take Profit/Stop Loss (TP/SL) are triggered precisely.
+  - **Slow Loop**: Triggered by the K-line alignment scheduler, using large models for multi-dimensional deep reasoning.
+  - **Fast Loop**: Driven by the `Plan Scheduler`, providing millisecond-level price monitoring to ensure precise TP/SL execution.
 - 🤖 **Multi-Agent Distributed Reasoning**:
-  - **Indicator Agent**: Focuses on trend resonance of mathematical indicators like RSI, MACD, ATR, etc.
-  - **Pattern Agent**: Identifies Price Action, SMC liquidity zones, and classic K-line patterns.
-  - **Trend Agent**: Filters out noise and focuses on large structure judgment across multiple cycles.
+  - **Indicator Agent**: Focuses on trend resonance of indicators like RSI, MACD, and ATR.
+  - **Pattern Agent**: Identifies price action, SMC liquidity zones, and classic candle patterns.
+  - **Trend Agent**: Filters noise and focuses on multi-timeframe structural direction.
 - ⚙️ **Highly Configurable**:
-  - **Dynamic Prompt Injection**: Supports configuring independent prompt libraries for different coins (e.g., BTC, ETH, SOL).
-  - **Flexible Strategy Library**: Define complex exit plans (scaled take profit, dynamic ATR trailing stop) via YAML.
-- 🛡️ **Passive Executor Mode**: Seamlessly integrates **Freqtrade** as the execution terminal. Brale retains full control, using Freqtrade's stable infrastructure for physical order placement, eliminating redundancy at the strategy level.
-- ⚡ **High-Performance Go Kernel**: Concurrently handles multi-currency market data fetching, indicator calculation, and Agent scheduling.
+  - **Dynamic Prompt Injection**: Configure independent prompt libraries per symbol (e.g., BTC, ETH, SOL).
+  - **Flexible Strategy Library**: Define complex exit plans (tiered take-profit, dynamic ATR trailing stop) via YAML.
+- 🛡️ **Passive Executor Mode**: Seamlessly integrates **Freqtrade** as the execution terminal. Brale keeps full control and uses Freqtrade's stable infrastructure for actual order placement, eliminating strategy-layer redundancy.
+- ⚡ **High-Performance Go Core**: Concurrent handling of multi-symbol data fetching, indicator computation, and agent scheduling.
 
 ## 🏗️ Architecture Flow
 
@@ -32,26 +32,26 @@
 
 ## ⚠️ Risk Disclaimer
 
-**Brale is an open-source tool for quantitative trading research and development; it is NOT financial investment advice. Cryptocurrency trading is highly speculative and involves significant risk. You may lose part or all of your investment capital. Do not invest money you cannot afford to lose. Past performance is not indicative of future results. Use Brale at your own risk.**
+**Brale is an open-source tool for quantitative trading research and development. It is NOT financial investment advice. Cryptocurrency trading is highly speculative and carries significant risk. You may lose part or all of your invested capital. Do not invest funds you cannot afford to lose. Past performance does not indicate future results. Use Brale at your own risk.**
 
 ## 🚀 Quick Start (Docker)
 
 ### 1. Prepare Configuration
 
 ```bash
-# Copy configuration files
+# Copy configs
 cp configs/config.example.yaml configs/config.yaml
 cp configs/user_data/freqtrade-config.example.json configs/user_data/freqtrade-config.json
 
-# Note:
-# 1. Fill in your LLM API Key in configs/config.yaml
-# 2. Configure Exchange API in configs/user_data/freqtrade-config.json (or use dry-run mode)
-# 3. Modify [ai.multi_agent], [ai.provider_preference], and cycle parameters in config.yaml / profiles.yaml according to your selected model
+# Notes:
+# 1. Fill in your LLM API Keys in configs/config.yaml
+# 2. Configure exchange API in configs/user_data/freqtrade-config.json (or use dry-run)
+# 3. Adjust [ai.multi_agent], [ai.provider_preference], and cycle parameters in config.yaml / profiles.yaml
 ```
 
-### 2. Start Services
+### 2. Start the Service
 
-It is recommended to use the Make command for a one-click start. It will automatically clean the environment, prepare data directories, and start services in dependency order:
+Recommended: one-command startup via Make. It will clean the environment, prepare data directories, and bring up services in order:
 
 ```bash
 make start
@@ -59,37 +59,37 @@ make start
 
 ## 🔌 Execution Layer (Pluggable)
 
-Brale issues real orders through the `Execution Engine` abstraction. The default implementation is [Freqtrade](https://github.com/freqtrade/freqtrade), but the core logic is decoupled from it:
+Brale dispatches real orders through the `Execution Engine` abstraction. The default implementation is [Freqtrade](https://github.com/freqtrade/freqtrade), but the core logic is decoupled:
 
-- **Decoupled Logic**: Set `freqtrade.enabled` to `false` in `configs/config.yaml` to run only AI strategies and indicator analysis.
-- **Passive Control**: Brale performs Force Entry and Force Exit via the Freqtrade API. Freqtrade's own strategy file (`BraleSharedStrategy.py`) remains empty and is used only as an execution terminal.
-- **Exit Plan Synchronization**: Brale's `Plan Scheduler` calculates TP/SL points in real-time and sends close position commands to Freqtrade when triggered, implementing AI logic that is more flexible than Freqtrade's native stop loss.
+- **Decoupled logic**: Set `freqtrade.enabled` to `false` in `configs/config.yaml` to run AI analysis only.
+- **Passive control**: Brale uses the Freqtrade API for Force Entry/Force Exit. Freqtrade's strategy file (`BraleSharedStrategy.py`) stays empty and serves only as an execution terminal.
+- **Exit plan sync**: Brale's `Plan Scheduler` computes TP/SL levels in real time and sends close orders on trigger, providing more flexible AI-driven exits than native Freqtrade stop-loss.
 
 ## 🧩 Indicator System
 
-Brale calculates multi-dimensional technical indicators based on `go-talib`, supporting automatic adjustment based on configuration:
+Brale uses `go-talib` to compute multi-dimensional technical indicators with automatic configuration:
 
 - **Trend**: EMA (21/50/200), MACD (bullish/bearish/flat)
 - **Momentum**: RSI (overbought/oversold), ROC, Stochastic Oscillator
-- **Volatility**: ATR (used for dynamic stop loss or slippage estimation)
-- **Derivatives Data**: Open Interest (OI), Funding Rate - Requires exchange support.
+- **Volatility**: ATR (dynamic stoploss or slippage estimation)
+- **Derivatives**: Open Interest (OI), Funding Rate - exchange support required
 
-## 🤝 Contribution Guidelines
+## 🤝 Contribution Guide
 
-Issues and Pull Requests are welcome!
-1. Fork this repository
-2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the branch (`git push origin feature/AmazingFeature`)
+Contributions via Issues and Pull Requests are welcome!
+1. Fork the repo
+2. Create a feature branch (`git checkout -b feature/AmazingFeature`)
+3. Commit changes (`git commit -m 'Add some AmazingFeature'`)
+4. Push to your branch (`git push origin feature/AmazingFeature`)
 5. Open a Pull Request
 
 ## 📄 License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License - see [LICENSE](LICENSE) for details.
 
 ## 🙏 Acknowledgments
 
-- [Freqtrade](https://github.com/freqtrade/freqtrade) - Excellent cryptocurrency trading bot
-- [NoFxAiOS/nofx](https://github.com/NoFxAiOS/nofx) - Inspiration for Multi-Agent Decision Prompts
-- [adshao/go-binance](https://github.com/adshao/go-binance) - Elegant Go Language Binance SDK
-- [go-talib](https://github.com/markcheno/go-talib) - Go Language Technical Analysis Library
+- [Freqtrade](https://github.com/freqtrade/freqtrade) - excellent crypto trading bot infrastructure
+- [NoFxAiOS/nofx](https://github.com/NoFxAiOS/nofx) - inspiration for multi-agent decision prompts
+- [adshao/go-binance](https://github.com/adshao/go-binance) - elegant Go Binance SDK
+- [go-talib](https://github.com/markcheno/go-talib) - technical analysis library for Go
