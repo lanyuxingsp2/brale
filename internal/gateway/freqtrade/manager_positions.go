@@ -23,7 +23,7 @@ func (m *Manager) ListFreqtradePositions(ctx context.Context, opts exchange.Posi
 
 	switch params.status {
 	case "active", "open":
-		if list, ok := m.listActivePositionsFromTrader(now, params.symbolFilter); ok {
+		if list, ok := m.listActivePositionsFromTrader(ctx, now, params.symbolFilter); ok {
 			return finalizePositionList(ctx, m, list, params.page, params.limit, params.offset), nil
 		}
 		return m.listActivePositionsFromRepo(ctx, now, params)
@@ -100,13 +100,29 @@ func paginateRange(total, offset, limit int) (int, int) {
 	return offset, end
 }
 
-func (m *Manager) listActivePositionsFromTrader(now int64, symbolFilter string) ([]exchange.APIPosition, bool) {
+func (m *Manager) listActivePositionsFromTrader(ctx context.Context, now int64, symbolFilter string) ([]exchange.APIPosition, bool) {
 	if m == nil || m.trader == nil {
 		return nil, false
 	}
 	snap := m.trader.Snapshot()
 	if snap == nil || len(snap.Positions) == 0 {
 		return nil, false
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	realizedByTrade := map[int]database.LiveOrderRecord{}
+	if m.posRepo != nil {
+		if recs, err := m.posRepo.ListActivePositions(ctx, 500); err == nil {
+			for _, rec := range recs {
+				if symbolFilter != "" && !strings.EqualFold(rec.Symbol, symbolFilter) {
+					continue
+				}
+				if rec.FreqtradeID > 0 {
+					realizedByTrade[rec.FreqtradeID] = rec
+				}
+			}
+		}
 	}
 	list := make([]exchange.APIPosition, 0, len(snap.Positions))
 	for _, p := range snap.Positions {
@@ -116,7 +132,21 @@ func (m *Manager) listActivePositionsFromTrader(now int64, symbolFilter string) 
 		if symbolFilter != "" && !strings.EqualFold(p.Symbol, symbolFilter) {
 			continue
 		}
-		list = append(list, exchangePositionToAPIPosition(*p, now))
+		pos := exchangePositionToAPIPosition(*p, now)
+		if rec, ok := realizedByTrade[pos.TradeID]; ok {
+			realizedUSD := valOrZero(rec.RealizedPnLUSD)
+			if realizedUSD != 0 {
+				baseStake := deriveBaseStake(pos)
+				totalUSD := realizedUSD + pos.UnrealizedPnLUSD
+				pos.PnLUSD = totalUSD
+				if baseStake > 0 {
+					pos.PnLRatio = totalUSD / baseStake
+				} else if pos.PnLRatio == 0 {
+					pos.PnLRatio = pos.UnrealizedPnLRatio + valOrZero(rec.RealizedPnLRatio)
+				}
+			}
+		}
+		list = append(list, pos)
 	}
 	if len(list) == 0 {
 		return nil, false
@@ -224,7 +254,12 @@ func (m *Manager) APIPositionByID(ctx context.Context, tradeID int) (*exchange.A
 	now := time.Now().UnixMilli()
 	pos := liveOrderToAPIPosition(rec, now)
 	m.hydrateAPIPositionExit(ctx, &pos)
+	attachCloseHistory(&pos, rec)
 	return &pos, nil
+}
+
+func (m *Manager) GetFreqtradePosition(ctx context.Context, tradeID int) (*exchange.APIPosition, error) {
+	return m.APIPositionByID(ctx, tradeID)
 }
 
 func (m *Manager) RefreshAPIPosition(ctx context.Context, tradeID int) (*exchange.APIPosition, error) {

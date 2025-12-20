@@ -190,8 +190,7 @@
                                     <div class="text-right">
                                         <div class="pos-pnl" :class="p.pnl_ratio>0 ? 'positive' : (p.pnl_ratio<0 ? 'negative' : '')">[[ formatUSD(p.pnl_usd) ]]</div>
                                         <div class="pos-sub">ROE [[ formatPercent(p.pnl_ratio) ]]</div>
-                                        <!-- realized pnl removed -->
-                                        <div class="pos-sub">未实现 [[ formatUSD(p.unrealized_pnl_usd) ]]</div>
+                                        <div class="pos-sub">已实现 [[ formatUSD(p.realized_pnl_usd || 0) ]] · 未实现 [[ formatUSD(p.unrealized_pnl_usd) ]]</div>
                                         <div class="pos-sub mt-2">SL [[ formatNumber(p.stop_loss) ]] / TP [[ formatNumber(p.take_profit) ]]</div>
                                     </div>
                                 </div>
@@ -575,8 +574,7 @@
                                 <div class="text-right">
                                     <div class="pos-pnl" :class="p.pnl_ratio>0 ? 'positive' : (p.pnl_ratio<0 ? 'negative' : '')">[[ formatUSD(p.pnl_usd) ]]</div>
                                     <div class="pos-sub">ROE [[ formatPercent(p.pnl_ratio) ]]</div>
-                                    <!-- realized pnl removed -->
-                                    <div class="pos-sub">未实现 [[ formatUSD(p.unrealized_pnl_usd) ]]</div>
+                                    <div class="pos-sub">已实现 [[ formatUSD(p.realized_pnl_usd || 0) ]] · 未实现 [[ formatUSD(p.unrealized_pnl_usd) ]]</div>
                                     <div class="pos-sub mt-2">SL [[ p.stop_loss ? formatNumber(p.stop_loss) : '--' ]] / TP [[ p.take_profit ? formatNumber(p.take_profit) : '--' ]]</div>
                                     <div class="pos-sub">距 SL [[ formatPercent(stopLossDistancePct(p)) ]] · 最近触发线 [[ formatPercent(nearestTriggerDistancePct(p)) ]]</div>
                                 </div>
@@ -862,6 +860,7 @@
                                                 </button>
                                             </div>
                                             <p class="muted">ROE [[ formatPercent(positionDetail.data.pnl_ratio) ]]</p>
+                                            <p class="muted">已实现 [[ formatUSD(positionDetail.data.realized_pnl_usd || 0) ]] · 未实现 [[ formatUSD(positionDetail.data.unrealized_pnl_usd) ]]</p>
                                         </div>
                                         <div class="detail-card">
                                             <p class="muted">仓位价值 / 保证金</p>
@@ -929,6 +928,38 @@
                                     </div>
                                     <div class="muted text-xs" v-if="exitLevels.length">
                                         TradingView 外部嵌入不支持在图内直接画线，已在图下模拟标记。
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="notion-block mt-6" v-if="positionDetail.data">
+                                <div class="block-header">
+                                    <div>
+                                        <p class="notion-section-title">平仓历史</p>
+                                        <h3>Close History</h3>
+                                    </div>
+                                    <div class="muted">来自 /status orders</div>
+                                </div>
+                                <div v-if="!positionCloseHistory.length" class="muted italic">暂无平仓记录</div>
+                                <div class="log-list" v-else>
+                                    <div class="log-row" v-for="(o, idx) in positionCloseHistory" :key="o.order_id || o.filled_at || o.opened_at || idx">
+                                        <div>[[ formatDateTime(o.filled_at || o.opened_at) ]]</div>
+                                        <div class="muted">
+                                            [[ orderSideLabel(o.side) ]]
+                                            <span v-if="o.tag">· [[ o.tag ]]</span>
+                                            <span v-else-if="o.order_type">· [[ o.order_type ]]</span>
+                                        </div>
+                                        <div class="muted">
+                                            [[ formatNumber(o.filled || o.amount) ]]
+                                            <span v-if="o.status">· [[ o.status ]]</span>
+                                        </div>
+                                        <div>
+                                            <div>[[ formatNumber(o.price) ]]</div>
+                                            <div class="muted text-xs" v-if="o.pnl_usd || o.pnl_ratio">
+                                                PnL [[ formatUSD(o.pnl_usd) ]]
+                                                <span v-if="o.pnl_ratio">([[ formatPercent(o.pnl_ratio) ]])</span>
+                                            </div>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
@@ -1147,13 +1178,13 @@
     <script>
         window.__APP_INIT__ = {
             view: "{{ if .InitialView }}{{ .InitialView }}{{ else }}desk{{ end }}",
-            decisionId: {{ if .DecisionID }}{{ .DecisionID }}{{ else }}null{{ end }},
-        traceId: {{ if .TraceID }}{{ printf "%q" .TraceID }}{{ else }}null{{ end }},
-        tradeId: {{ if .TradeID }}{{ .TradeID }}{{ else }}null{{ end }},
-        symbol: {{ if .Symbol }}{{ printf "%q" .Symbol }}{{ else }}""{{ end }},
-        selectedSymbols: {{ if .SelectedSymbols }}{{ toJSON .SelectedSymbols }}{{ else }}[]{{ end }},
-        defaultSymbols: {{ toJSON .DefaultSymbols }},
-        symbolDetails: {{ toJSON .SymbolDetails }},
+            decisionId: {{ if .DecisionID }}{ { .DecisionID } } { { else } } null{ { end } },
+        traceId: { { if .TraceID } } { { printf "%q".TraceID } } { { else } } null{ { end } },
+        tradeId: { { if .TradeID } } { { .TradeID } } { { else } } null{ { end } },
+        symbol: { { if .Symbol } } { { printf "%q".Symbol } } { { else } } ""{ { end } },
+        selectedSymbols: { { if .SelectedSymbols } } { { toJSON.SelectedSymbols } } { { else } } []{ { end } },
+        defaultSymbols: { { toJSON.DefaultSymbols } },
+        symbolDetails: { { toJSON.SymbolDetails } },
         };
     </script>
     <script src="/static/js/admin-app.js"></script>

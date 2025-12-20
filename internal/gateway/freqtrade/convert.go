@@ -106,6 +106,20 @@ func applyOpenPnL(tr *Trade, rec database.LiveOrderRecord) database.LiveOrderRec
 		rec.CurrentProfitAbs = ptrFloat(tr.ProfitAbs)
 		rec.UnrealizedPnLUSD = ptrFloat(tr.ProfitAbs)
 	}
+	// Use TotalProfitAbs (realized + unrealized) for PnL display to match Freqtrade UI
+	if tr.TotalProfitAbs != 0 {
+		rec.PnLUSD = ptrFloat(tr.TotalProfitAbs)
+	}
+	if tr.TotalProfitRatio != 0 {
+		rec.PnLRatio = ptrFloat(tr.TotalProfitRatio)
+	}
+	if tr.RealizedProfit != 0 {
+		rec.RealizedPnLUSD = ptrFloat(tr.RealizedProfit)
+		if rec.StakeAmount != nil && *rec.StakeAmount != 0 {
+			ratio := tr.RealizedProfit / *rec.StakeAmount
+			rec.RealizedPnLRatio = ptrFloat(ratio)
+		}
+	}
 	return rec
 }
 

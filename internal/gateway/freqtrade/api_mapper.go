@@ -33,6 +33,11 @@ func liveOrderStatusText(status database.LiveOrderStatus) string {
 }
 
 func effectiveAmount(entry, amount, stake, leverage float64) float64 {
+	// Prioritize actual amount when available, since stake remains at initial value
+	// even after partial closures while amount reflects current remaining position.
+	if amount > 0 {
+		return amount
+	}
 	if stake > 0 && leverage > 0 && entry > 0 {
 		return (stake * leverage) / entry
 	}
@@ -108,15 +113,15 @@ func resolveCurrentPrice(rec database.LiveOrderRecord) float64 {
 }
 
 func resolvePnLForLive(rec database.LiveOrderRecord) (float64, float64) {
-	pnlRatio := valOrZero(rec.CurrentProfitRatio)
-	pnlUSD := valOrZero(rec.CurrentProfitAbs)
-	if rec.Status == database.LiveOrderStatusClosed {
-		if v := valOrZero(rec.PnLRatio); v != 0 {
-			pnlRatio = v
-		}
-		if v := valOrZero(rec.PnLUSD); v != 0 {
-			pnlUSD = v
-		}
+	// Prefer PnLUSD/PnLRatio which contains total profit (from Freqtrade's total_profit_abs/ratio)
+	// Fall back to CurrentProfitAbs/Ratio for unrealized only
+	pnlUSD := valOrZero(rec.PnLUSD)
+	pnlRatio := valOrZero(rec.PnLRatio)
+	if pnlUSD == 0 {
+		pnlUSD = valOrZero(rec.CurrentProfitAbs)
+	}
+	if pnlRatio == 0 {
+		pnlRatio = valOrZero(rec.CurrentProfitRatio)
 	}
 	return pnlUSD, pnlRatio
 }
@@ -139,6 +144,8 @@ func initAPIPositionFromLive(rec database.LiveOrderRecord, times orderTimes, cur
 		PnLUSD:             pnlUSD,
 		UnrealizedPnLRatio: valOrZero(rec.UnrealizedPnLRatio),
 		UnrealizedPnLUSD:   valOrZero(rec.UnrealizedPnLUSD),
+		RealizedPnLRatio:   valOrZero(rec.RealizedPnLRatio),
+		RealizedPnLUSD:     valOrZero(rec.RealizedPnLUSD),
 		Status:             liveOrderStatusText(rec.Status),
 	}
 }
@@ -263,6 +270,17 @@ func liveOrderToAPIPosition(rec database.LiveOrderRecord, nowMillis int64) excha
 	baseStake := deriveBaseStake(out)
 	derivedUSD, derivedRatio := derivePnL(out.EntryPrice, out.CurrentPrice, out.Amount, out.Stake, out.Leverage, out.Side)
 	fillPnL(&out, rec.Status == database.LiveOrderStatusClosed, baseStake, pnlUSD, pnlRatio, derivedUSD, derivedRatio)
+	if rec.Status != database.LiveOrderStatusClosed {
+		realizedUSD := valOrZero(rec.RealizedPnLUSD)
+		// Always set PnLUSD as total (realized + unrealized) for open positions
+		totalUSD := realizedUSD + out.UnrealizedPnLUSD
+		out.PnLUSD = totalUSD
+		if baseStake > 0 {
+			out.PnLRatio = totalUSD / baseStake
+		} else if out.PnLRatio == 0 {
+			out.PnLRatio = out.UnrealizedPnLRatio + valOrZero(rec.RealizedPnLRatio)
+		}
+	}
 
 	out.RemainingRatio = remainingRatio(rec)
 	finalizeClosure(&out, times.closeMillis, currentPrice)

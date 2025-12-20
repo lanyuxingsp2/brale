@@ -186,6 +186,14 @@
     return map[key] || `OP-${op || '未知'}`;
   };
 
+  const orderSideLabel = (side) => {
+    const s = (side || '').toString().trim().toLowerCase();
+    if (!s) return '--';
+    if (s === 'buy') return 'BUY';
+    if (s === 'sell') return 'SELL';
+    return s.toUpperCase();
+  };
+
   const pickReason = (log, trace) => {
     const steps = trace?.steps || [];
     const last = steps[steps.length - 1];
@@ -264,6 +272,26 @@
     };
   };
 
+  const normalizeCloseHistory = (list) => {
+    if (!Array.isArray(list)) return [];
+    return list.map((item) => ({
+      order_id: item.order_id ?? item.OrderID ?? '',
+      side: (item.side ?? item.Side ?? '').toString().toLowerCase(),
+      order_type: item.order_type ?? item.OrderType ?? '',
+      tag: item.tag ?? item.Tag ?? '',
+      amount: Number(item.amount ?? item.Amount ?? 0),
+      filled: Number(item.filled ?? item.Filled ?? 0),
+      price: Number(item.price ?? item.Price ?? 0),
+      cost: Number(item.cost ?? item.Cost ?? 0),
+      status: item.status ?? item.Status ?? '',
+      is_open: item.is_open ?? item.IsOpen ?? false,
+      opened_at: item.opened_at ?? item.OpenedAt ?? 0,
+      filled_at: item.filled_at ?? item.FilledAt ?? 0,
+      pnl_usd: Number(item.pnl_usd ?? item.PnLUSD ?? 0),
+      pnl_ratio: Number(item.pnl_ratio ?? item.PnLRatio ?? 0),
+    }));
+  };
+
   const normalizePositionDetail = (p) => {
     if (!p) return p;
     const normEvents = (p.events || p.Events || []).map((ev) => ({
@@ -271,9 +299,11 @@
       operation: ev.operation || ev.Operation,
       details: ev.details || ev.Details || {},
     }));
+    const closeHistory = normalizeCloseHistory(p.close_history || p.CloseHistory || []);
     return {
       ...p,
       events: normEvents,
+      close_history: closeHistory,
     };
   };
 
@@ -1629,6 +1659,7 @@
             'remaining_ratio',
             'stop_loss',
             'take_profit',
+            'close_history',
           ].forEach((k) => {
             if (Object.prototype.hasOwnProperty.call(next, k)) {
               positionDetail.data[k] = next[k];
@@ -2551,9 +2582,9 @@
 	          .filter((l) => l.length);
 	      };
 
-	      const planChangeGroups = computed(() => {
-	        const list = positionDetail.planChanges || [];
-	        if (!list.length) return [];
+      const planChangeGroups = computed(() => {
+        const list = positionDetail.planChanges || [];
+        if (!list.length) return [];
 	        const groups = new Map();
 	        list.forEach((log) => {
 	          const src = (log.triggerSource || '').toString().trim() || 'manual';
@@ -2584,9 +2615,21 @@
 	          traceShort: shortTrace(g.decisionTraceId),
 	          lines: Array.from(new Set(g.lines)),
 	        }));
-	        out.sort((a, b) => (Date.parse(b.createdAt) || 0) - (Date.parse(a.createdAt) || 0));
-	        return out;
-	      });
+        out.sort((a, b) => (Date.parse(b.createdAt) || 0) - (Date.parse(a.createdAt) || 0));
+        return out;
+      });
+
+      const positionCloseHistory = computed(() => {
+        const list = (positionDetail.data && positionDetail.data.close_history) || [];
+        if (!list.length) return [];
+        const out = [...list];
+        out.sort((a, b) => {
+          const ta = Number(a.filled_at || a.opened_at || 0);
+          const tb = Number(b.filled_at || b.opened_at || 0);
+          return tb - ta;
+        });
+        return out;
+      });
 
 
       const forceClosePosition = async () => {
@@ -2899,6 +2942,7 @@
           expandMobileSteps.value = false;
         },
         operationLabel,
+        orderSideLabel,
         loadLogs,
         planSummaryLines,
         planComponentLabel,
@@ -2906,6 +2950,7 @@
 	        planStatusLabel,
 	        changeFieldLabel,
 	        planChangeGroups,
+	        positionCloseHistory,
 	        planAdjustForm,
         tierEdits,
         atrEdits,
