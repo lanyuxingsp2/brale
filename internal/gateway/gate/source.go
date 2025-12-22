@@ -115,6 +115,27 @@ func (s *Source) FetchHistory(ctx context.Context, symbol, interval string, limi
 		logger.Errorf("[gate] fetch kline failed %s %s limit=%d: %v", symbol, interval, limit, err)
 		return nil, err
 	}
+	// Gate klines do not include taker buy/sell volume. For historical klines we approximate
+	// using contract_stats.lsr_taker (taker buy / taker sell):
+	//   buy  = volume * r / (1 + r)
+	//   sell = volume / (1 + r)
+	// Assumptions:
+	// - contract_stats interval matches the requested kline interval
+	// - volume unit matches (Gate returns contract size or quote; splitting by ratio preserves sum)
+	// - this is historical only; WS klines will still lack taker split
+	ratioByTime := make(map[int64]float64)
+	if stats, _, statErr := s.rest.FuturesApi.ListContractStats(ctx, gateSettle, exchangeSymbol, &gateapi.ListContractStatsOpts{
+		Interval: optional.NewString(interval),
+		Limit:    optional.NewInt32(int32(limit)),
+	}); statErr == nil {
+		for _, st := range stats {
+			if st.LsrTaker > 0 {
+				ratioByTime[st.Time*1000] = float64(st.LsrTaker)
+			}
+		}
+	} else {
+		logger.Debugf("[gate] contract_stats unavailable for %s %s: %v", symbol, interval, statErr)
+	}
 
 	out := make([]market.Candle, 0, len(kls))
 	for _, kl := range kls {
@@ -123,16 +144,23 @@ func (s *Source) FetchHistory(ctx context.Context, symbol, interval string, limi
 		if dur, ok := scheduler.ParseIntervalDuration(interval); ok {
 			closeTime = openTime + dur.Milliseconds()
 		}
-		out = append(out, market.Candle{
+		volume := parseFloat(kl.Sum)
+		c := market.Candle{
 			OpenTime:  openTime,
 			CloseTime: closeTime,
 			Open:      parseFloat(kl.O),
 			High:      parseFloat(kl.H),
 			Low:       parseFloat(kl.L),
 			Close:     parseFloat(kl.C),
-			Volume:    parseFloat(kl.Sum),
+			Volume:    volume,
 			Trades:    0,
-		})
+		}
+		if r, ok := ratioByTime[openTime]; ok && r > 0 {
+			den := 1 + r
+			c.TakerBuyVolume = volume * r / den
+			c.TakerSellVolume = volume / den
+		}
+		out = append(out, c)
 	}
 
 	if dur, ok := scheduler.ParseIntervalDuration(interval); ok {

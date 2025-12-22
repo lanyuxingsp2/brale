@@ -5,6 +5,7 @@
 > *Since this is a performance (trading), I wish you "Break a leg" (a successful show / big profits)!*
 
 [![Chinese Documentation](https://img.shields.io/badge/lang-中文-red.svg)](doc/README_CN.md)
+[![Newcomer Guide](https://img.shields.io/badge/doc-User_Guide-blueviolet.svg)](doc/USER_GUIDE.org)
 [![Go Version](https://img.shields.io/badge/go-1.24.0-blue.svg)](go.mod)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 

@@ -1,0 +1,408 @@
+#+TITLE: Brale Newcomer's Guide 🎭
+#+OPTIONS: toc:nil
+
+Welcome to Brale (Break a leg)!
+
+This document is designed for users who are *new to this project*. Whether you are a quantitative trading novice or an AI enthusiast, this guide will help you quickly understand how Brale works and successfully set up your own AI trading system.
+
+-----
+
+** Table of Contents
+
+1. [[#1-what-is-this-introduction][What is this? (Introduction)]]
+2. [[#2-prerequisites][Prerequisites]]
+3. [[#3-quick-start-step-by-step][Quick Start (Step-by-Step)]]
+4. [[#4-core-configuration-explained][Core Configuration Explained]]
+   - [[#41-global-settings-configyaml][Global Settings (config.yaml)]]
+   - [[#42-strategies-and-symbols-profilesyaml][Strategies and Symbols (profiles.yaml)]]
+   - [[#43-exchange-execution-freqtrade-configjson][Exchange Execution (freqtrade-config.json)]]
+5. [[#5-how-it-works][How It Works]]
+6. [[#6-daily-operations-and-commands][Daily Operations and Commands]]
+7. [[#7-faq][FAQ]]
+8. [[#8-network-proxy-configuration-advanced][Network Proxy Configuration (Advanced)]]
+
+-----
+
+** 1. What is this? (Introduction)
+:PROPERTIES:
+:CUSTOM_ID: 1-what-is-this-introduction
+:END:
+
+*Brale* is an automated trading system that combines *AI deep thinking* with *traditional quantitative execution*.
+
+Simply put:
+- *The Brain (AI)*: It uses Large Language Models like DeepSeek, GPT, and Claude to analyze the market. It looks at trends, patterns (like Head and Shoulders), and indicators (MACD, RSI), writing a trading plan just like a human analyst.
+- *The Hands (Freqtrade)*: It integrates a mature quantitative tool (Freqtrade) to handle order placement and fund management.
+
+*Why choose Brale?*
+- You don't need to write complex Python strategy code.
+- You can leverage the reasoning capabilities of large models to adapt to changing markets, rather than relying on rigid indicator formulas.
+- It automatically handles risk management (Take Profit / Stop Loss) for you.
+
+-----
+
+** 2. Prerequisites
+:PROPERTIES:
+:CUSTOM_ID: 2-prerequisites
+:END:
+
+Before you begin, please ensure your computer or server meets the following requirements:
+
+*** Hardware Requirements
+- *Memory*: 4GB+ recommended (running Docker containers requires some resources).
+- *Disk*: 20GB+ space recommended.
+- *OS*: Linux (Ubuntu/Debian recommended), macOS, or Windows (requires WSL2).
+
+*** Software Requirements
+You need to install the following software (please search for installation tutorials if not installed):
+1. *Docker & Docker Compose*: To run the entire system.
+2. *Git*: To download the code.
+3. *Make*: (Optional but recommended) To simplify command operations.
+
+*** Essential Accounts/Keys
+1. *LLM API Key*: You need an API Key for a large model.
+2. *Exchange API Key*: (If trading with real money) e.g., Binance or Gate.io API Key and Secret. Modify the freqtrade config file directly.
+3. *Telegram Bot* (Optional): If you want to receive trading notifications on your phone.
+
+-----
+
+** 3. Quick Start (Step-by-Step)
+:PROPERTIES:
+:CUSTOM_ID: 3-quick-start-step-by-step
+:END:
+
+Follow these steps to start your system in 10 minutes.
+
+*** Step 1: Download Code
+Open a terminal and run:
+#+begin_src bash
+git clone https://github.com/lauklim/brale.git
+cd brale
+#+end_src
+
+*** Step 2: Initialize Configuration
+We have prepared example configuration files for you, just copy them:
+#+begin_src bash
+# Copy main config
+cp configs/config.example.yaml configs/config.yaml
+
+# Copy Freqtrade config
+cp configs/user_data/freqtrade-config.example.json configs/user_data/freqtrade-config.json
+#+end_src
+
+*** Step 3: Modify Key Configurations (Important!)
+Use your favorite editor (like ~nano~, ~vim~, or ~emacs~) to modify the following files.
+
+*1. Modify ~configs/config.yaml~ (Fill in LLM Key):*
+Find the ~ai.models~ section, enable the model you want to use, and fill in the ~api_key~.
+#+begin_src yaml
+ai:
+  models:
+    - id: "deepseek"
+      enabled: true          # <--- Change to true
+      api_key: "sk-xxxx..."  # <--- Fill in your DeepSeek API Key
+      model: "deepseek-chat"
+#+end_src
+
+*2. Modify ~configs/user_data/freqtrade-config.json~ (Exchange Config):*
+If you only want to run a simulation, ensure ~"dry_run": true~.
+If trading with real money, fill in the exchange Keys:
+#+begin_src json
+"exchange" : {
+    "name": "binance",
+    "key": "YOUR_EXCHANGE_API_KEY",
+    "secret": "YOUR_EXCHANGE_API_SECRET",
+    ...
+}
+#+end_src
+
+*** Step 4: One-Click Start
+Run in the terminal:
+#+begin_src bash
+make start
+#+end_src
+This command will automatically:
+1. Clean up old environments.
+2. Create necessary data directories.
+3. Build Docker images.
+4. Start Freqtrade and Brale services.
+
+Startup may take a few minutes. Once complete, you can view logs with:
+#+begin_src bash
+make logs
+#+end_src
+If you see something like "Brale started" or "Scheduler initialized", the startup was successful!
+
+-----
+
+** 4. Core Configuration Explained
+:PROPERTIES:
+:CUSTOM_ID: 4-core-configuration-explained
+:END:
+
+Brale's power lies in its flexible configuration. You need to focus on three main files.
+
+*** 4.1 Global Settings (~config.yaml~)
+:PROPERTIES:
+:CUSTOM_ID: 41-global-settings-configyaml
+:END:
+This is the master control room of the system.
+- *~app~*: Set log level and port.
+- *~market~*: Select market source (default ~binance~). If you are in mainland China, you may need to configure ~proxy~.
+- *~ai~*:
+  - ~provider_preference~: Set the default order of AI models to use. If multiple models are available, the system will select based on this order.
+  - ~multi_agent~: *Multi-Agent Role Configuration* (Core Feature).
+    Brale breaks down market analysis into multiple specialized fields, and you can assign the most suitable AI model to each field:
+    - ~indicator_provider~: *Indicator Analyst*. Responsible for interpreting mathematical indicators like RSI, MACD. Recommended to use a model with strong logical reasoning (e.g., DeepSeek).
+    - ~pattern_provider~: *Pattern Analyst*. Responsible for identifying candlestick patterns (e.g., Double Bottom, Head and Shoulders).
+    - ~trend_provider~: *Trend Analyst*. Responsible for judging large-cycle direction and filtering noise.
+    - ~mechanics_provider~: *Market Mechanics Analyst*. Responsible for analyzing derivatives data like Funding Rate, Open Interest.
+    /Hint: The provider name here must correspond to the ~id~ defined in your ~models~ list./
+  - ~freqtrade~: *Execution Interface Configuration*.
+    Used to connect Brale with the Freqtrade instance responsible for order placement:
+    - ~username~ & ~password~: *Freqtrade API Credentials*. Must match the ~api_server~ settings in ~freqtrade-config.json~.
+    - ~api_url~: Address of the Freqtrade API (default ~http://freqtrade:8080/api/v1~).
+    - ~min_stop_distance_pct~: *Minimum Stop Loss Distance* (e.g., 0.005 means 0.5%).
+    - ~entry_slip_pct~: *Entry Slippage Estimation*.
+  - ~weights~: Weights of AI models in the final decision voting.
+- *~notify~*: Configure Telegram Bot Token and Chat ID.
+
+*** 4.2 Strategies and Symbols (~profiles.yaml~)
+:PROPERTIES:
+:CUSTOM_ID: 42-strategies-and-symbols-profilesyaml
+:END:
+This is where you tell the AI *"what to trade"* and *"how to observe the market"*.
+
+Key configuration items explained:
+- *~targets~*: *Trading Targets*. Example: ~["ETH/USDT", "BTC/USDT"]~.
+- *~intervals~*: *Observation Intervals*. Example: ~["15m", "1h", "4h"]~.
+- *~decision_interval_multiple~*: *Decision Frequency*. Based on a multiple of the minimum interval. E.g., ~15m~ interval, multiple ~2~ = Decision every 30 minutes.
+- *~analysis_slice~ & ~slice_drop_tail~*: *Field of View*.
+  - ~analysis_slice: 100~: AI observes the recent 100 candlesticks.
+  - ~slice_drop_tail: 1~: Drop the latest unclosed candlestick.
+- *🔗 Middlewares/Derivatives & Agent Relationship*:
+  Middlewares are the "data factory" for Agents. If the corresponding data source is not enabled, the corresponding Agent will not work:
+  - *Indicator Agent*: Depends on ~ema_trend~, ~rsi_extreme~, ~macd_trend~.
+  - *Mechanics Agent*: Depends on ~derivatives~ (OI/Funding).
+  - *Pattern/Trend Agent*: Depends on ~kline_fetcher~ and basic candlesticks.
+  /Note: If you delete an indicator configuration, the system will automatically skip the corresponding Agent analysis step./
+- *~middlewares~*: *Data and Indicator Middlewares*.
+  - ~kline_fetcher~: *Mandatory*. Fetches raw candlestick data.
+  - ~ema_trend~ / ~rsi_extreme~ / ~macd_trend~: Computes specific mathematical indicators for AI reference.
+- *~prompts~*: *Prompt Command Center*.
+  - ~user~: Injects the user prompt for the final request, used to define specific rules (e.g., long only).
+  - ~system_by_model~: Customize system prompts for different models.
+- *~derivatives~*: *Derivatives Data*. Includes Open Interest (OI), Funding Rate, and Fear & Greed Index.
+- *~exit_plans~*: *Exit Strategy Constraints*. Limits the types of TP/SL plans the AI must generate.
+
+*** 4.3 Exchange Execution (~freqtrade-config.json~)
+:PROPERTIES:
+:CUSTOM_ID: 43-exchange-execution-freqtrade-configjson
+:END:
+This controls *"Funds and Risk Management"* and is also responsible for pushing trading signals to your phone.
+
+Key configuration items explained:
+- *~exchange.pair_whitelist~ & ~pairlists~*: *Pair Selection*.
+  - This determines "which coins can be bought" by Freqtrade.
+  - *Static Whitelist (~pair_whitelist~)*: Manually specify coins. Ensure one-to-one correspondence with ~targets~ in ~profiles.yaml~.
+  - *Dynamic Screening (~pairlists~)*:
+    - The example uses ~VolumePairList~ (screen by volume).
+    - ~"number_assets": 5~ means Freqtrade will automatically select top 5 coins by volume to trade.
+    - *Note*: If Brale suggests buying ETH, but ETH is not in the top 5 filtered by Freqtrade, the order might fail. Therefore, it is recommended to expand the ~pairlists~ screening range or use a static whitelist directly.
+- *~api_server~*: *API Service Settings*.
+  - ~username~ & ~password~: Set username and password for Brale to login.
+  - *Important*: Settings here must match ~freqtrade.username/password~ in ~config.yaml~, otherwise Brale cannot command Freqtrade to place orders.
+- *~telegram~*: *Message Push*.
+  - ~enabled~: Whether to enable.
+  - ~token~: Your Telegram Bot Token.
+  - ~chat_id~: Your personal or group Chat ID.
+  - Once enabled, Freqtrade will notify you via Telegram immediately upon opening, closing, or error.
+- *~max_open_trades~*: Maximum number of open trades.
+- *~dry_run~*: ~true~ for paper trading (simulation), ~false~ for live trading (at your own risk!).
+
+-----
+
+** 5. How It Works
+:PROPERTIES:
+:CUSTOM_ID: 5-how-it-works
+:END:
+
+Here's a rough breakdown of what it does in the background (chronologically):
+
+1. *Data Collection & Caching*
+   - MarketDataService is the general market data collection layer. Upon startup, it pre-heats candlesticks according to the profile's analysis cycle (minimum 30 minutes), then continuously writes incrementally to memory cache via WebSocket for Agents needing market windows (e.g., indicator/pattern/trend); when ~kline_windows.enabled~ in ~profiles.yaml~ is off, candlestick windows won't be stuffed into the User Prompt.
+   - MechanicsAgent only reuses the same time alignment rhythm to refresh derivatives; it's not its exclusive service.
+   - Before each decision round, indicator_provider / pattern_provider / trend_provider generate inputs based on the latest cache (if configured enabled and data available), without re-fetching from the exchange.
+   - Derivatives (OI, Funding, Fear & Greed, CVD) are polled in the background by MetricsService; MarketMechanicsAgent LLM call is triggered only when values change compared to the last time.
+   - Real-time price is fetched on-demand (latest tick) during the Provider stage, written into User Prompt along with account funds.
+
+2. *Multi-Agent Division of Labor (Soft Constraints)*
+   - Indicator Agent: Only talks about indicator status, gives no directional conclusion.
+   - Trend Agent: Only describes structure and position, makes no trading judgment.
+   - Pattern/Narrative Agent: Talks about game theory and patterns, gives no trading orders.
+   - Market Mechanics Agent (Mechanics): Only provides derivatives/sentiment context (OI/Funding/F&G/CVD sentiment), outputs no trading direction.
+   - *Indicator Agent Data Link*: Takes ~analysis_slice~ clipped candlestick window from MarketDataService (dropping ~slice_drop_tail~ unclosed part), defaults to requiring at least 240 history bars; computes EMA21/50/200, RSI14, MACD, ROC9, Stoch_K, Williams %R(14), ATR14, OBV, etc. using TA-Lib. Results are compressed into JSON by ~BuildIndicatorSnapshot~: each indicator retains only the last 3~5 sample points, relative price offset, extreme value intervals, unified rounding to 4 decimal places; Indicator Agent prompt only takes the first 4 blocks (symbol+interval+forecast), and appends soft instructions like "Please summarize momentum, volume-price, and volatility".
+   - *Trend Agent Data Link*: Reads the same batch of candlesticks (rounded to 4 decimal places as configured) and compresses them into structured JSON code blocks via ~BuildTrendCompressedJSON~: ~structure_points~ de-duplicated via fractal point scan + ATR*0.5 (adjacent <=10 bars treated as same cluster), max 8; ~recent_candles~ retains only recent 7 OHLCV, last one with RSI; ~global_context~ includes linear regression slope, volume/20MA ratio, EMA20/50/200. All idx are 0-based, price/volume also truncated to 4 decimal places, outputs no long/short conclusion, leaving only coordinates and pattern clues.
+   - *Pattern/Narrative Agent Data Link*: Runs ~pattern.Analyze~ with clipped candlesticks, determines bias via linear regression slope, and detects patterns like Double Top/Bottom, Converging Triangle, Volatility Contraction, etc., combined into short sentences; extra TrendSummary (regression offset percentage) and optional visual description ("Visual" note given by renderComposite) are put into prompt together, carrying no raw candlesticks or indicator values, ensuring extremely short input.
+   - *Market Mechanics Agent Data Link*: MetricsService polls cached OI/Funding (backtracking according to configured timeframe, with historical comparison), Fear & Greed index (max 5 history), CVD (accumulated based on taker buy/sell volume in candlesticks, outputting Value/Momentum/Normalized, divergence and top/bottom reversal markers), Sentiment score (0-100 rough sentiment). Data is assembled into a text list with de-duplication fingerprint (SHA256); reuses last LLM output when fingerprint is unchanged to avoid repeated calls; returns "skip" hint when no data.
+   - *User Prompt Assembly & Compression*: Each Agent's user prompt is the aforementioned compressed snapshot block (Indicator JSON, Trend JSON code block, Pattern/Visual text, Mechanics list). When Multi-Agent outputs enter the final Fund Manager prompt, they are placed in the ~## Multi-Agent Collaboration~ area, displayed in the order of Indicator→Pattern→Trend→Mechanics, with 3600 character truncation for single Agent output. Candlestick windows, account, positions, previous reasoning, etc. are also truncated in length and values (candlesticks optionally only stuff recent 4 bars) to control tokens, driving LLM reasoning with minimal information.
+
+3. *Decision Synthesis*
+   - *Fund Manager LLM* as the final decision maker receives a *User Prompt* containing comprehensive information to reason with. This Prompt includes:
+     - *Account & Position Info*: Current balance, PnL of held positions, entry price, etc.
+     - *Multi-Agent Consultation Report*:
+       - /Indicator Agent/'s indicator resonance analysis (RSI/MACD status).
+       - /Pattern Agent/'s pattern recognition results (e.g., "Bullish Engulfing").
+       - /Trend Agent/'s large-cycle trend judgment.
+       - /Mechanics Agent/'s market mechanics analysis (if enabled).
+     - *Market Derivatives Data*:
+       - Fear & Greed Index.
+       - Open Interest (OI) and its changes.
+       - Funding Rate.
+       - CVD (Cumulative Volume Delta) and Sentiment Score.
+     - *Price Windows Snapshot*: OHLCV data of the recent 4 candlesticks, letting AI grasp the latest price momentum. (Optional to enable.)
+     - *Historical Memory*: AI reasoning logic and decisions from the previous round, helping the model maintain coherent thinking (avoiding self-contradiction).
+     - *Strategy Output Constraints*: Defines the actions and strategies the AI should generate that Brale can understand.
+   - *MetaAggregator*: After LLM gives advice, performs final risk voting and logic validation (e.g., force HOLD priority, prevent frequent reverse opening), directly vetoing high-risk trades if necessary.
+
+4. *Execution & Landing*
+   - After decision generation, instructions are sent to Freqtrade for order placement, recording trade_id/strategy_id; initial plan and tips are written to live database (strategy store).
+   - Position & Plan Monitoring: Scheduler refreshes position and plan progress periodically (also reading/writing live database), including TP/SL/Batch adjustments; subsequent strategy adjustments and change logs are also written to the same DB.
+   - Closing & Sync: When exit conditions are met or manually closed, position is closed via Freqtrade, status written back to live database, UI reads directly from the same data source, no rollback or double data sources.
+
+5. *Rendering & Rate Limiting*
+   - Chart rendering is triggered only when images are needed; concurrency is controlled by ~advanced.visual_render_concurrency~ in ~config.yaml~ to avoid system resource warnings from simultaneous rendering.
+   - LLM Image Support: After enabling ~vision~/image capability in model configuration, rendered charts are sent as images to LLM (mainly for visual reference in decision stage, like candlestick snapshots); images are not rendered or uploaded when disabled.
+
+-----
+
+** 6. Daily Operations and Commands
+:PROPERTIES:
+:CUSTOM_ID: 6-daily-operations-and-commands
+:END:
+
+First start recommended using ~make start~ to complete build and initialization. Generated data will land in ~./data~ directory (containing strategies and state). Subsequent operations should not delete or clear ~data~, otherwise strategies will be lost.
+
+Common Docker Commands:
+
+| Command | Action |
+| :--- | :--- |
+| ~docker compose up -d~ | Start services (when images are built) |
+| ~docker compose down~ | Stop and remove containers |
+| ~docker compose logs -f~ | View real-time logs |
+| ~docker compose build~ | Rebuild images |
+
+*Example: Steps to Upgrade Brale*
+1) Pull latest code: ~git pull~
+2) Rebuild image and start service: ~docker compose up -d brale --build~
+3) Verify: ~docker compose logs -f~ to check if running normally
+/Reminder: When there are positions, please keep the ~./data~ directory, do not clear it, to avoid losing strategies./
+
+-----
+
+** 7. FAQ
+:PROPERTIES:
+:CUSTOM_ID: 7-faq
+:END:
+
+*Q: Brale reports "failed to login freqtrade" on startup?*
+A: This is the most common issue. Please check:
+1. Whether ~freqtrade~ username and password in ~config.yaml~ exactly match ~api_server~ in ~freqtrade-config.json~.
+2. Whether Freqtrade container has fully started (it starts slower than Brale; Brale will retry a few times, but if it keeps failing, check Freqtrade logs).
+
+*Q: Why did AI suggest opening a position, but no order was placed?*
+A: Several possibilities:
+1. *Coin not in whitelist*: Brale wants to buy ETH, but Freqtrade's ~pair_whitelist~ or ~VolumePairList~ didn't select ETH, resulting in order rejection.
+2. *Risk control failed*: The Reward/Risk ratio planned by AI is lower than ~min_risk_reward~ in ~config.yaml~ (default 2.0), system automatically filtered this trade.
+3. *Insufficient funds*: Account available balance is insufficient to pay ~stake_amount~.
+4. *Market condition doesn't meet entry standard*: You can modify system prompt to execute according to your trading style.
+
+*Q: Why does log prompt "not enough data for indicator" or chart is blank?*
+A: Insufficient candlestick data.
+Please check ~profiles.yaml~: ~kline_fetcher~'s ~limit~ must be large enough.
+*Formula reference*: ~limit~ >= ~analysis_slice~ + 200 (if you use EMA200).
+
+*Q: How to view AI's thinking process?*
+A:
+1. View console logs (~make logs~).
+2. If ~llm_dump_payload: true~ is enabled, detailed JSON interactions are saved in the log file.
+3. Check the SQLite database specified by ~ai.decision_log_path~.
+
+*Q: What is ~INSTALL_HEADLESS=true~ in Dockerfile for?*
+A:
+1. *Purpose*: Brale supports "visual analysis", rendering candlestick charts into images for large models with visual capabilities (like GPT, Claude). Chrome is responsible for rendering these images.
+2. *How to disable*: If the model you use doesn't support vision, or you don't need AI to look at charts, you can set it to ~false~ during build to reduce image size:
+   #+begin_src bash
+   docker compose build --build-arg INSTALL_HEADLESS=false brale
+   #+end_src
+
+*Q: Do I need to restart after modifying configuration?*
+A:
+- Modify ~config.yaml~: *Must restart* (~make bs~ or follow examples above).
+
+-----
+
+** 8. Network Proxy Configuration (Advanced)
+:PROPERTIES:
+:CUSTOM_ID: 8-network-proxy-configuration-advanced
+:END:
+If you are in a network environment where you cannot directly access Binance or LLM services (like OpenAI), you need to configure a proxy.
+
+*** Method 1: Global Container Proxy (Recommended)
+If you run proxy tools like Clash/V2Ray locally, you can modify ~docker-compose.yml~ to let containers go through your local proxy:
+
+1. Open ~docker-compose.yml~.
+2. Find ~brale~ *and* ~freqtrade~ services.
+3. Under their ~environment~, uncomment proxy configurations and modify ports:
+#+begin_src yaml
+# Brale Service Config
+brale:
+  environment:
+    HTTP_PROXY: http://host.docker.internal:10080  # Change 10080 to your proxy port
+    HTTPS_PROXY: http://host.docker.internal:10080
+    NO_PROXY: localhost,127.0.0.1,brale,freqtrade
+
+# Freqtrade Service Config (Important! Otherwise Freqtrade cannot connect to exchange)
+freqtrade:
+  environment:
+    HTTP_PROXY: http://host.docker.internal:10080
+    HTTPS_PROXY: http://host.docker.internal:10080
+    NO_PROXY: localhost,127.0.0.1,brale,freqtrade
+#+end_src
+/Note: ~host.docker.internal~ is a reserved Docker domain pointing to your host machine./
+
+*** Market Proxy (config.yaml)
+To let market data fetching go through proxy, modify ~configs/config.yaml~:
+#+begin_src yaml
+market:
+  sources:
+    - name: "binance"
+      proxy:
+        enabled: true
+        rest_url: "http://host.docker.internal:10080" # Replace with your proxy address
+        ws_url: "socks5://host.docker.internal:10080"
+#+end_src
+
+*** Freqtrade Proxy Settings (configs/user_data/freqtrade.json)
+Set proxy directly for CCXT (underlying trading library) in Freqtrade's configuration file:
+Find the ~exchange~ section in ~configs/user_data/freqtrade-config.json~:
+#+begin_src json
+"exchange": {
+    "ccxt_config": {
+        "enableRateLimit": true,
+        "proxies": {
+            "http": "http://host.docker.internal:10080",# Replace with your proxy address
+            "https": "http://host.docker.internal:10080"# Replace with your proxy address
+        }
+    },
+    "ccxt_async_config": {
+        "enableRateLimit": true,
+        "proxies": {
+            "http": "http://host.docker.internal:10080",# Replace with your proxy address
+            "https": "http://host.docker.internal:10080"# Replace with your proxy address
+        }
+    }
+}
+#+end_src
+
+Wish you smooth trading with Brale, **Break a leg!** 🚀

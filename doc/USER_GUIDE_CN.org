@@ -1,0 +1,408 @@
+#+TITLE: Brale 新手入门指南 🎭
+#+OPTIONS: toc:nil
+
+欢迎来到 Brale (Break a leg)！
+
+这篇文档专为 *初次接触本项目* 的用户设计。无论你是量化交易新手，还是 AI 爱好者，通过本指南，你都能快速理解 Brale 的工作原理，并成功搭建起属于自己的 AI 交易系统。
+
+-----
+
+** 目录
+
+1. [[#1-这是什么简介][这是什么？(简介)]]
+2. [[#2-准备工作][准备工作]]
+3. [[#3-快速上手-保姆级教程][快速上手 (保姆级教程)]]
+4. [[#4-核心配置详解][核心配置详解]]
+   - [[#41-全局设置-configyaml][全局设置 (config.yaml)]]
+   - [[#42-策略与币种-profilesyaml][策略与币种 (profiles.yaml)]]
+   - [[#43-交易所执行-freqtrade-configjson][交易所执行 (freqtrade-config.json)]]
+5. [[#5-工作原理简介][工作原理简介]]
+6. [[#6-日常运维与命令][日常运维与命令]]
+7. [[#7-常见问题-faq][常见问题]]
+8. [[#8-网络代理配置-进阶][网络代理配置 (进阶)]]
+
+-----
+
+** 1. 这是什么？(简介)
+:PROPERTIES:
+:CUSTOM_ID: 1-这是什么简介
+:END:
+
+*Brale* 是一个结合了 *AI 深度思考* 与 *传统量化执行* 的自动交易系统。
+
+简单来说：
+- *大脑 (AI)*：它使用像 DeepSeek, GPT, Claude 这样的大语言模型来分析市场。它会看趋势、看形态（如头肩顶）、看指标（MACD, RSI），像人类分析师一样写出交易计划。
+- *手脚 (Freqtrade)*：它集成了一个成熟的量化工具（Freqtrade）来负责下单和资金管理。
+
+*为什么选择 Brale？*
+- 你不需要自己写复杂的 Python 策略代码。
+- 你可以利用大模型的推理能力来应对多变的市场，而不是死板的指标公式。
+- 它自动帮你做好风控（止盈止损）。
+
+-----
+
+** 2. 准备工作
+:PROPERTIES:
+:CUSTOM_ID: 2-准备工作
+:END:
+
+在开始之前，请确保你的电脑或服务器满足以下要求：
+
+*** 硬件要求
+- *内存*：建议 4GB 以上（运行 Docker 容器需要一定资源）。
+- *硬盘*：建议预留 20GB 以上空间。
+- *系统*：Linux (推荐 Ubuntu/Debian), macOS, 或 Windows (需安装 WSL2)。
+
+*** 软件要求
+你需要安装以下软件（如果没有安装，请自行搜索安装教程）：
+1. *Docker & Docker Compose*: 用于运行整个系统。
+2. *Git*: 用于下载代码。
+3. *Make*: (可选但推荐) 用于简化命令操作。
+
+*** 必备账号/Key
+1. *LLM API Key*: 你需要一个大模型的 API Key。
+2. *交易所 API Key*: (如果需要实盘) 比如 Binance 或 Gate.io 的 API Key 和 Secret。直接修改freqtrade 配置文件即可。
+3. *Telegram Bot* (可选): 如果你想在手机上接收交易通知。
+
+-----
+
+** 3. 快速上手 (保姆级教程)
+:PROPERTIES:
+:CUSTOM_ID: 3-快速上手-保姆级教程
+:END:
+
+按照以下步骤，在 10 分钟内启动你的系统。
+
+*** 第一步：下载代码
+打开终端 (Terminal)，执行：
+#+begin_src bash
+git clone https://github.com/lauklim/brale.git
+cd brale
+#+end_src
+
+*** 第二步：初始化配置
+我们已经为你准备好了示例配置文件，直接复制即可：
+#+begin_src bash
+# 复制主配置文件
+cp configs/config.example.yaml configs/config.yaml
+
+# 复制 Freqtrade 配置文件
+cp configs/user_data/freqtrade-config.example.json configs/user_data/freqtrade-config.json
+#+end_src
+
+*** 第三步：修改关键配置 (重要！)
+使用你喜欢的编辑器（如 ~nano~, ~vim~ 或 ~emacs~）修改以下文件。
+
+*1. 修改 ~configs/config.yaml~ (填入 LLM Key):*
+找到 ~ai.models~ 部分，启用你要用的模型并填入 ~api_key~。
+#+begin_src yaml
+ai:
+  models:
+    - id: "deepseek"
+      enabled: true          # <--- 改为 true
+      api_key: "sk-xxxx..."  # <--- 填入你的 DeepSeek API Key
+      model: "deepseek-chat"
+#+end_src
+
+*2. 修改 ~configs/user_data/freqtrade-config.json~ (交易所配置):*
+如果你只想模拟盘跑跑看，确保 ~"dry_run": true~。
+如果要是实盘，填入交易所的 Key：
+#+begin_src json
+"exchange" ： {
+    "name": "binance",
+    "key": "你的交易所API_KEY",
+    "secret": "你的交易所API_SECRET",
+    ...
+}
+#+end_src
+
+*** 第四步：一键启动
+在终端执行：
+#+begin_src bash
+make start
+#+end_src
+这个命令会自动：
+1. 清理旧环境。
+2. 创建必要的数据目录。
+3. 构建 Docker 镜像。
+4. 启动 Freqtrade 和 Brale 服务。
+
+启动可能需要几分钟。完成后，你可以通过以下命令查看日志：
+#+begin_src bash
+make logs
+#+end_src
+如果你看到类似 "Brale started" 或 "Scheduler initialized" 的字样，说明启动成功了！
+
+-----
+
+** 4. 核心配置详解
+:PROPERTIES:
+:CUSTOM_ID: 4-核心配置详解
+:END:
+
+Brale 的强大在于灵活配置。你需要关注三个主要文件。
+
+*** 4.1 全局设置 (~config.yaml~)
+:PROPERTIES:
+:CUSTOM_ID: 41-全局设置-configyaml
+:END:
+这是系统的总控室。
+- *~app~*：设置日志级别和端口。
+- *~market~*：选择行情源（默认 ~binance~）。如果你在中国大陆，可能需要配置 ~proxy~。
+- *~ai~*：
+  - ~provider_preference~：设置默认使用的 AI 模型顺序。如果有多个可用模型，系统将按此顺序选择。
+  - ~multi_agent~：*多特工分工配置*（核心功能）。
+    Brale 将市场分析拆解为多个专业领域，你可以为每个领域指定最擅长的 AI 模型：
+    - ~indicator_provider~：*指标分析师*。负责解读 RSI, MACD 等数学指标。建议使用逻辑推理能力强的模型（如 DeepSeek）。
+    - ~pattern_provider~：*形态分析师*。负责识别 K 线形态（如双底、头肩顶）。
+    - ~trend_provider~：*趋势分析师*。负责判断大周期方向，过滤噪音。
+    - ~mechanics_provider~：*市场力学分析师*。负责分析资金费率、持仓量等衍生品数据。
+    /提示：这里的 provider 名称必须对应你在 ~models~ 列表中定义的 ~id~。/
+  - ~freqtrade~：*执行端对接配置*。
+    用于连接 Brale 与负责下单的 Freqtrade 实例：
+    - ~username~ & ~password~：*Freqtrade API 的访问凭证*。必须与 ~freqtrade-config.json~ 中的 ~api_server~ 设置一致。
+    - ~api_url~：Freqtrade API 的地址（默认 ~http://freqtrade:8080/api/v1~）。
+    - ~min_stop_distance_pct~：*最小止损距离*（如 0.005 表示 0.5%）。
+    - ~entry_slip_pct~：*开仓滑点预估*。
+  - ~weights~：AI 模型在最后决策投票时的权重。
+- *~notify~*：配置 Telegram 机器人的 Token 和 Chat ID。
+
+*** 4.2 策略与币种 (~profiles.yaml~)
+:PROPERTIES:
+:CUSTOM_ID: 42-策略与币种-profilesyaml
+:END:
+这是你告诉 AI *"去交易什么"* 以及 *"怎么观察市场"* 的地方。
+
+关键配置项详解：
+- *~targets~*：*交易目标*。示例：~["ETH/USDT", "BTC/USDT"]~。
+- *~intervals~*：*观察周期*。示例：~["15m", "1h", "4h"]~。
+- *~decision_interval_multiple~*：*决策频率*。基于最小周期的倍数。如 ~15m~ 周期，倍数 ~2~ = 每 30 分钟决策一次。
+- *~analysis_slice~ & ~slice_drop_tail~*：*视野范围*。
+  - ~analysis_slice: 100~：AI 观察最近 100 根 K 线。
+  - ~slice_drop_tail: 1~：丢弃最新的一根未收盘 K 线。
+- *🔗 Middlewares/Derivatives 与 Agent 的联动关系*：
+  Middlewares 是 Agent 的“数据工厂”。如果不开启相应的数据源，对应的 Agent 将无法工作：
+  - *Indicator Agent*: 依赖 ~ema_trend~, ~rsi_extreme~, ~macd_trend~。
+  - *Mechanics Agent*: 依赖 ~derivatives~ (OI/Funding)。
+  - *Pattern/Trend Agent*: 依赖 ~kline_fetcher~ 和基础 K 线。
+  /注：如果你删除了某个指标配置，系统将自动跳过对应的 Agent 分析步骤。/
+- *~middlewares~*：*数据与指标中间件*。
+  - ~kline_fetcher~：*必须项*。拉取原始 K 线数据。
+  - ~ema_trend~ / ~rsi_extreme~ / ~macd_trend~：计算具体的数学指标并供 AI 参考。
+- *~prompts~*：*提示词指挥部*。
+  - ~user~：注入最后请求的 user prompt，可用于定义具体规则（如：只做多）。
+  - ~system_by_model~：为不同模型定制系统提示词。
+- *~derivatives~*：*衍生品数据*。包含持仓量 (OI)、资金费率和恐慌贪婪指数。
+- *~exit_plans~*：*退出策略约束*。限定 AI 必须生成的止盈止损计划类型。
+
+*** 4.3 交易所执行 (~freqtrade-config.json~)
+:PROPERTIES:
+:CUSTOM_ID: 43-交易所执行-freqtrade-configjson
+:END:
+这是控制 *"资金和风控"* 的地方，同时也负责将交易信号推送到你的手机。
+
+关键配置项详解：
+- *~exchange.pair_whitelist~ & ~pairlists~*：*交易对选择*。
+  - 这是 Freqtrade 决定“哪些币可以买”的规则。
+  - *静态白名单 (~pair_whitelist~)*：手动指定币种。确保与 ~profiles.yaml~ 中的 ~targets~ 一一对应。
+  - *动态筛选 (~pairlists~)*：
+    - 示例中使用了 ~VolumePairList~（按成交量筛选）。
+    - ~"number_assets": 5~ 表示 Freqtrade 会自动选取成交量前 5 的币种进行交易。
+    - *注意*：如果 Brale 建议买入 ETH，但 ETH 不在 Freqtrade 当前筛选出的前 5 名中，下单可能会失败。因此，建议将 ~pairlists~ 的筛选范围放大，或者直接使用静态白名单。
+- *~api_server~*：*API 服务设置*。
+  - ~username~ & ~password~：设置用于被 Brale 登录的用户名和密码
+  - *重要*：这里的设置必须与 ~config.yaml~ 里的 ~freqtrade.username/password~ 保持一致，否则 Brale 无法指挥 Freqtrade 下单。
+- *~telegram~*：*消息推送*。
+  - ~enabled~：是否启用。
+  - ~token~：你的 Telegram Bot Token。
+  - ~chat_id~：你的个人或群组 Chat ID。
+  - 开启后，Freqtrade 会在开仓、平仓、报错时第一时间通过 Telegram 通知你。
+- *~max_open_trades~*：最多同时持仓几个。
+- *~dry_run~*：~true~ 为模拟盘（不花钱），~false~ 为实盘（风险自负！）。
+
+-----
+
+** 5. 工作原理简介
+:PROPERTIES:
+:CUSTOM_ID: 5-工作原理简介
+:END:
+
+让你知道它在后台做了什么（按时间先后粗略拆解）：
+
+1. *数据收集与缓存*
+   - MarketDataService 是通用行情采集层，启动时按 profile 的分析周期（最小 30 分钟）批量预热 K 线，之后通过 WebSocket 持续增量写入内存缓存，供需要行情窗口的 Agent 使用（如 indicator/pattern/trend）；~profiles.yaml~ 的 ~kline_windows.enabled~ 关闭时，不会把 K 线窗口塞进 User Prompt。
+   - MechanicsAgent 只复用同样的时间对齐节奏来刷新衍生品，不是它的专属服务。
+   - 每轮决策前，indicator_provider / pattern_provider / trend_provider 基于最新缓存生成输入（若配置启用且数据可用），不再向交易所重复拉取。
+   - Derivatives（OI、Funding、恐慌与贪婪、CVD）由 MetricsService 后台轮询；只有数值相较上次有变化时才会触发 MarketMechanicsAgent 的 LLM 调用。
+   - 实时价格在 Provider 阶段按需拉取最新 tick，连同账户资金一起写入 User Prompt。
+
+2. *多 Agent 分工（软约束）*
+   - 指标 Agent：只讲指标状态，不给方向结论。
+   - 趋势 Agent：只描述结构与位置，不做交易判断。
+   - 形态/叙事 Agent：讲博弈与形态，不下交易指令。
+   - 市场力学 Agent（Mechanics）：只提供衍生品/情绪上下文（OI/Funding/F&G/CVD 情绪），不输出交易方向。
+   - *指标 Agent 数据链路*：从 MarketDataService 取 ~analysis_slice~ 剪裁后的 K 线窗口（会丢掉 ~slice_drop_tail~ 未收盘部分），默认要求至少 240 根历史；用 TA-Lib 计算 EMA21/50/200、RSI14、MACD、ROC9、Stoch_K、Williams %R(14)、ATR14、OBV 等。计算结果会被 ~BuildIndicatorSnapshot~ 压缩为 JSON：每个指标仅保留末尾 3~5 个取样点、相对价格的偏移、极值区间，统一四舍五入到 4 位小数；Indicator Agent prompt 只会取前 4 个区块（symbol+interval+forecast），并附上“请总结动能、量价与波动率”这类软指令。
+   - *趋势 Agent 数据链路*：读取同一批 K 线（已按配置圆整到 4 位小数）并由 ~BuildTrendCompressedJSON~ 压缩为结构化 JSON 代码块：~structure_points~ 通过分形点扫描+ATR*0.5 去重（相邻 <=10 根视为同簇），最多 8 个；~recent_candles~ 只保留最近 7 根 OHLCV，最后一根带 RSI；~global_context~ 附带线性回归斜率、成交量/20MA 比例、EMA20/50/200。所有 idx 为 0-based，价格/成交量同样截断到 4 位小数，不输出多空结论，只留下坐标与形态线索。
+   - *形态/叙事 Agent 数据链路*：用剪裁后的 K 线运行 ~pattern.Analyze~，做线性回归斜率判定 bias，并检测双顶/双底、收敛三角、波动收缩等模式，组合成短句；额外的 TrendSummary（回归偏移百分比）与可选的可视化描述（renderComposite 给出的 “Visual” note）一起放入 prompt，不携带原始 K 线或指标数值，保证输入极短。
+   - *市场力学 Agent 数据链路*：MetricsService 轮询缓存 OI/Funding（按配置的时间框架回溯，带历史对比）、Fear & Greed 指数（最多 5 条历史）、CVD（基于 K 线中的 taker 买卖量累加，输出 Value/Momentum/Normalized、背离和顶底翻转标记）、Sentiment 评分（0-100 的粗情绪）。数据会被组装成文本列表并做去重指纹（SHA256），指纹未变时复用上一轮 LLM 输出，避免重复调用；无数据时直接返回“跳过”提示。
+   - *User Prompt 拼装与压缩*：每个 Agent 的 user prompt 都是上述压缩后的快照块（Indicator JSON、Trend JSON 代码块、Pattern/Visual 文本、Mechanics 列表）。多 Agent 输出进入最终 Fund Manager prompt 时，会放在 ~## Multi-Agent 协作~ 区域，按 Indicator→Pattern→Trend→Mechanics 顺序展示，并对单个 Agent 输出做 3600 字符截断。K 线窗口、账户、持仓、上一轮推理等其他部分也会做长度截断和数值取舍（K 线可选仅塞最近 4 根）以控制 token，用最小信息量驱动 LLM 推理。
+
+3. *决策合成 (Decision Synthesis)*
+   - *Fund Manager LLM* 作为最终决策者，会收到一份包含全方位信息的 *User Prompt*，以此进行推理。这份 Prompt 包含了：
+     - *账户与持仓信息*：当前余额、已持仓位的盈亏、开仓价格等。
+     - *Multi-Agent 会诊报告*：
+       - /Indicator Agent/ 的指标共振分析（RSI/MACD状态）。
+       - /Pattern Agent/ 的形态识别结果（如“看涨吞没”）。
+       - /Trend Agent/ 的大周期趋势判断。
+       - /Mechanics Agent/ 的市场力学分析（如果开启）。
+     - *市场衍生品数据 (Derivatives)*：
+       - 恐慌与贪婪指数 (Fear & Greed)。
+       - 持仓量 (Open Interest) 及其变化。
+       - 资金费率 (Funding Rate)。
+       - CVD (累计成交量增量) 与情绪评分。
+     - *K 线快照 (Price Windows)*：最近 4 根 K 线的 OHLCV 数据，让 AI 掌握最新价格动量。（可选是否开启。）
+     - *历史记忆*：上一轮的 AI 推理逻辑和决策，帮助模型保持思路连贯（避免左右互搏）。
+     - *策略输出约束*：由你选定的策略让AI生成brale 能读懂的动作以及策略
+   - *MetaAggregator*：在 LLM 给出建议后，进行最终的风险投票与逻辑校验（如：强制 HOLD 优先、防止频繁反向开单），必要时直接否决高风险交易。
+
+4. *执行与落地*
+   - 决策生成后，指令通过 Freqtrade 下单，记录 trade_id/strategy_id；初始计划与提示写入 live 数据库（strategy store）。
+   - 仓位与计划监控：调度器按周期刷新持仓与计划进度（同样读写 live 数据库），包括止盈/止损/分批调整；后续的策略调整与变更日志也写入同一库。
+   - 平仓与同步：当达到退出条件或手动平仓时，通过 Freqtrade 关闭仓位，状态回写 live 数据库，UI 直接读取同一数据源展示，无回退或双重数据源。
+
+5. *渲染与限流*
+   - 需要图像时才会触发图表渲染；并发数由 ~config.yaml~ 的 ~advanced.visual_render_concurrency~ 控制，避免同时渲染过多导致系统资源告警。
+   - LLM 图像支持：在模型配置中开启 ~vision~/图像能力后，渲染出的图表会作为图片传给 LLM（主要用于决策阶段的可视化参考，如 K 线快照）；未开启时不会渲染或上传图片。
+
+-----
+
+** 6. 日常运维与命令
+:PROPERTIES:
+:CUSTOM_ID: 6-日常运维与命令
+:END:
+
+首启建议用 ~make start~ 完成构建与初始化，生成的数据会落在 ~./data~ 目录（包含策略与状态）。后续请不要删除或清空 ~data~，否则会出现策略丢失。
+
+常用 Docker 指令：
+
+| 命令 | 作用 |
+| :--- | :--- |
+| ~docker compose up -d~ | 启动服务（已构建镜像时） |
+| ~docker compose down~ | 停止并移除容器 |
+| ~docker compose logs -f~ | 查看实时日志 |
+| ~docker compose build~ | 重新构建镜像 |
+
+*示例：升级 Brale 的操作步骤*
+1) 拉取最新代码：~git pull~
+2) 重新构建镜像并启动服务：~docker compose up -d brale --build~
+3) 验证：~docker compose logs -f~ 查看是否正常运行  
+/提醒：在有仓位的情况下，请保留 ~./data~ 目录，不要清空，避免策略丢失。/
+
+-----
+
+** 7. 常见问题 (FAQ)
+:PROPERTIES:
+:CUSTOM_ID: 7-常见问题-faq
+:END:
+
+*Q: 启动时 Brale 报错 "failed to login freqtrade"？*
+A: 这是最常见的问题。请检查：
+1. ~config.yaml~ 中的 ~freqtrade~ 用户名密码是否与 ~freqtrade-config.json~ 中的 ~api_server~ 完全一致。
+2. Freqtrade 容器是否已完全启动（它启动比 Brale 慢，Brale 会重试几次，但如果一直连不上需检查 Freqtrade 日志）。
+
+*Q: 为什么 AI 建议了开仓，但实际没有下单？*
+A: 有几种可能：
+1. *币种不在白名单*：Brale 想买 ETH，但 Freqtrade 的 ~pair_whitelist~ 或 ~VolumePairList~ 没选中 ETH，导致下单被拒。
+2. *风控未通过*：AI 规划的盈亏比（Reward/Risk）低于 ~config.yaml~ 中的 ~min_risk_reward~（默认 2.0），系统自动过滤了这笔交易。
+3. *资金不足*：账户可用余额不足以支付 ~stake_amount~。
+4. *行情不满足开仓标准*:可以修改system prompt来按照你的交易风格执行
+
+*Q: 为什么日志提示 "not enough data for indicator" 或图表空白？*
+A: K 线数据不足。
+请检查 ~profiles.yaml~：~kline_fetcher~ 的 ~limit~ 必须足够大。
+*公式参考*：~limit~ >= ~analysis_slice~ + 200 (如果你用了 EMA200)。
+
+*Q: 如何查看 AI 的思考过程？*
+A:
+1. 查看控制台日志（~make logs~）。
+2. 如果开启了 ~llm_dump_payload: true~，详细的 JSON 交互会保存在日志文件中。
+3. 检查 ~ai.decision_log_path~ 指定的 SQLite 数据库。
+
+*Q: Dockerfile 中的 ~INSTALL_HEADLESS=true~ 有什么用？*
+A:
+1. *作用*：Brale 支持“视觉分析”，它会将 K 线图渲染成图片发给具有视觉能力的大模型（如 GPT, Claude）。Chrome 负责完成这些图片的渲染工作。
+2. *如何禁用*：如果你使用的模型不支持视觉，或者不需要 AI 看图，可以在构建时将其设为 ~false~ 以减小镜像体积：
+   #+begin_src bash
+   docker compose build --build-arg INSTALL_HEADLESS=false brale
+   #+end_src
+
+*Q: 修改配置后需要重启吗？*
+A:
+- 修改 ~config.yaml~：*必须重启* (~make bs~ 或按照上面的示例执行)。
+
+-----
+
+** 8. 网络代理配置 (进阶)
+:PROPERTIES:
+:CUSTOM_ID: 8-网络代理配置-进阶
+:END:
+如果你处在无法直接访问 Binance 或 LLM 服务（如 OpenAI）的网络环境下，你需要配置代理。
+
+*** 方式一：全局容器代理 (推荐)
+如果你在本地运行了 Clash/V2Ray 等代理工具，可以通过修改 ~docker-compose.yml~ 来让容器走你的本地代理：
+
+1. 打开 ~docker-compose.yml~。
+2. 找到 ~brale~ *和* ~freqtrade~ 这两个服务（services）。
+3. 分别在它们的 ~environment~ 下，取消代理配置的注释并修改端口：
+#+begin_src yaml
+# Brale 服务配置
+brale:
+  environment:
+    HTTP_PROXY: http://host.docker.internal:10080  # 10080 改为你的代理端口
+    HTTPS_PROXY: http://host.docker.internal:10080
+    NO_PROXY: localhost,127.0.0.1,brale,freqtrade
+
+# Freqtrade 服务配置 (重要！否则 Freqtrade 连不上交易所)
+freqtrade:
+  environment:
+    HTTP_PROXY: http://host.docker.internal:10080
+    HTTPS_PROXY: http://host.docker.internal:10080
+    NO_PROXY: localhost,127.0.0.1,brale,freqtrade
+#+end_src
+/注意：~host.docker.internal~ 是 Docker 预留域名，指向你的宿主机。/
+
+*** 行情代理 (config.yaml)
+让行情拉取走代理，可以修改 ~configs/config.yaml~：
+#+begin_src yaml
+market:
+  sources:
+    - name: "binance"
+      proxy:
+        enabled: true
+        rest_url: "http://host.docker.internal:10080" # 替换为你的代理地址
+        ws_url: "socks5://host.docker.internal:10080"
+#+end_src
+
+*** freqtrade的代理设置（configs/user_data/freqtrade.json）
+在 Freqtrade 的配置文件中直接为 CCXT（底层交易库）设置代理：
+在 ~configs/user_data/freqtrade-config.json~ 中找到 ~exchange~ 部分：
+#+begin_src json
+"exchange": {
+    "ccxt_config": {
+        "enableRateLimit": true,
+        "proxies": {
+            "http": "http://host.docker.internal:10080",# 替换为你的代理地址
+            "https": "http://host.docker.internal:10080"# 替换为你的代理地址
+        }
+    },
+    "ccxt_async_config": {
+        "enableRateLimit": true,
+        "proxies": {
+            "http": "http://host.docker.internal:10080",# 替换为你的代理地址
+            "https": "http://host.docker.internal:10080"# 替换为你的代理地址
+        }
+    }
+}
+#+end_src
+
+祝你在 Brale 的帮助下，交易顺利，**Break a leg!** 🚀

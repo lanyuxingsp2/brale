@@ -5,6 +5,7 @@
 > *既然是演戏（交易），那就祝你 "Break a leg"（演出成功/大赚一笔）！*
 
 [![English Documentation](https://img.shields.io/badge/lang-English-blue.svg)](../README.md)
+[![新手指南](https://img.shields.io/badge/doc-新手指南-blueviolet.svg)](USER_GUIDE_CN.org)
 [![Go Version](https://img.shields.io/badge/go-1.24.0-blue.svg)](../go.mod)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](../LICENSE)
 
