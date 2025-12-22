@@ -86,69 +86,31 @@ func (e *DecisionEngine) executeAgentStage(ctx context.Context, stage agentStage
 	if tpl == "" {
 		return AgentInsight{}
 	}
-	var latestUpdate time.Time
-	fingerprint := ""
-	var user string
-	if stage.name == agentStageMechanics {
-		user, latestUpdate, fingerprint = e.buildMechanicsAgentPrompt(ctx, ctxs, fullCtx)
-		user = strings.TrimSpace(user)
-	} else {
-		user = strings.TrimSpace(stage.builder(ctxs, cfg))
-	}
+	user, latestUpdate, fingerprint := e.prepareAgentUser(ctx, stage, ctxs, cfg, fullCtx)
 	ins := AgentInsight{Stage: stage.name, System: tpl, User: user, Fingerprint: fingerprint}
-	if stage.name != agentStageMechanics && user == "" {
-		ins.Error = "输入为空"
-		ins.Warned = e.emitAgentWarning(stage.name, stage.providerID, ins.Error)
+
+	if stop := e.validateAgentInput(&ins, stage, latestUpdate); stop {
 		return ins
 	}
-	if stage.name == agentStageMechanics && fingerprint == "" {
-		ins.Output = "衍生品数据尚未更新或获取失败，跳过本次分析。"
-		return ins
-	}
-	if stage.name == agentStageMechanics && user == "" && fingerprint != "" {
-		ins.Error = "输入为空"
-		ins.Warned = e.emitAgentWarning(stage.name, stage.providerID, ins.Error)
-		return ins
-	}
-	preferred := strings.TrimSpace(stage.providerID)
-	if preferred == "" {
-		ins.Error = "未配置模型"
-		ins.Warned = true
-		return ins
-	}
-	provider := e.findAgentProvider(preferred)
+
+	provider := e.selectAgentProvider(stage, &ins)
 	if provider == nil {
-		if preferred != "" {
-			ins.Error = fmt.Sprintf("未找到模型 %s", preferred)
-		} else {
-			ins.Error = "无可用模型"
-		}
-		ins.Warned = e.emitAgentWarning(stage.name, preferred, ins.Error)
 		return ins
 	}
 	ins.ProviderID = provider.ID()
+
 	prev := e.lookupPreviousAgentOutput(ctx, ctxs, stage.name, ins.ProviderID)
-	if stage.name == agentStageMechanics && prev.Output != "" {
-		if prev.Fingerprint != "" && fingerprint == prev.Fingerprint {
-			ins.Output = prev.Output
-			return ins
-		}
-		if prev.Fingerprint == "" && !latestUpdate.IsZero() && prev.Timestamp > 0 {
-			prevTS := time.UnixMilli(prev.Timestamp)
-			if !latestUpdate.After(prevTS) {
-				ins.Output = prev.Output
-				return ins
-			}
-		}
+	if reused := e.reuseMechanicsOutput(stage.name, prev, fingerprint, latestUpdate, &ins); reused {
+		return ins
 	}
 	if prev.Output != "" {
-		user = appendPreviousAgentOutput(user, stage.name, ins.ProviderID, prev)
-		ins.User = user
+		ins.User = appendPreviousAgentOutput(ins.User, stage.name, ins.ProviderID, prev)
 	}
+
 	purpose := describeAgentPurpose(stage.name)
-	logAIInput(fmt.Sprintf("multi-agent:%s", stage.name), provider.ID(), purpose, tpl, user, nil)
+	logAIInput(fmt.Sprintf("multi-agent:%s", stage.name), provider.ID(), purpose, tpl, ins.User, nil)
 	start := time.Now()
-	out, err := e.invokeAgentProvider(ctx, provider, tpl, user)
+	out, err := e.invokeAgentProvider(ctx, provider, tpl, ins.User)
 	logger.LogLLMResponse(fmt.Sprintf("multi-agent:%s", stage.name), provider.ID(), purpose, out)
 	if err != nil {
 		ins.Error = err.Error()
@@ -172,6 +134,74 @@ func (e *DecisionEngine) executeAgentStage(ctx context.Context, stage agentStage
 	}
 	ins.Output = trimmed
 	return ins
+}
+
+func (e *DecisionEngine) prepareAgentUser(ctx context.Context, stage agentStageConfig, ctxs []AnalysisContext, cfg brcfg.MultiAgentConfig, fullCtx Context) (string, time.Time, string) {
+	if stage.name == agentStageMechanics {
+		user, latestUpdate, fingerprint := e.buildMechanicsAgentPrompt(ctx, ctxs, fullCtx)
+		return strings.TrimSpace(user), latestUpdate, fingerprint
+	}
+	return strings.TrimSpace(stage.builder(ctxs, cfg)), time.Time{}, ""
+}
+
+func (e *DecisionEngine) validateAgentInput(ins *AgentInsight, stage agentStageConfig, latestUpdate time.Time) bool {
+	if stage.name != agentStageMechanics && ins.User == "" {
+		ins.Error = "输入为空"
+		ins.Warned = e.emitAgentWarning(stage.name, stage.providerID, ins.Error)
+		return true
+	}
+	if stage.name != agentStageMechanics {
+		return false
+	}
+	if ins.Fingerprint == "" {
+		ins.Output = "衍生品数据尚未更新或获取失败，跳过本次分析。"
+		return true
+	}
+	if ins.User == "" && ins.Fingerprint != "" {
+		ins.Error = "输入为空"
+		ins.Warned = e.emitAgentWarning(stage.name, stage.providerID, ins.Error)
+		return true
+	}
+	_ = latestUpdate
+	return false
+}
+
+func (e *DecisionEngine) selectAgentProvider(stage agentStageConfig, ins *AgentInsight) provider.ModelProvider {
+	preferred := strings.TrimSpace(stage.providerID)
+	if preferred == "" {
+		ins.Error = "未配置模型"
+		ins.Warned = true
+		return nil
+	}
+	p := e.findAgentProvider(preferred)
+	if p != nil {
+		return p
+	}
+	if preferred != "" {
+		ins.Error = fmt.Sprintf("未找到模型 %s", preferred)
+	} else {
+		ins.Error = "无可用模型"
+	}
+	ins.Warned = e.emitAgentWarning(stage.name, preferred, ins.Error)
+	return nil
+}
+
+func (e *DecisionEngine) reuseMechanicsOutput(stageName string, prev AgentOutputSnapshot, fingerprint string, latestUpdate time.Time, ins *AgentInsight) bool {
+	if stageName != agentStageMechanics || prev.Output == "" {
+		return false
+	}
+	if prev.Fingerprint != "" && fingerprint == prev.Fingerprint {
+		ins.Output = prev.Output
+		return true
+	}
+	if prev.Fingerprint == "" && !latestUpdate.IsZero() && prev.Timestamp > 0 {
+		prevTS := time.UnixMilli(prev.Timestamp)
+		if !latestUpdate.After(prevTS) {
+			ins.Output = prev.Output
+			return true
+		}
+	}
+	return false
 }
 
 func (e *DecisionEngine) lookupPreviousAgentOutput(ctx context.Context, ctxs []AnalysisContext, stage, providerID string) AgentOutputSnapshot {

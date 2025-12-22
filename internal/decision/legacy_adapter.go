@@ -157,32 +157,9 @@ func (e *DecisionEngine) decideSingle(ctx context.Context, input Context, applyD
 	if prevProviders := e.lookupPreviousProviderOutputs(ctx, input); len(prevProviders) > 0 {
 		input.PreviousProviderOutputs = prevProviders
 	}
-	type providerPrompt struct {
-		system string
-		user   string
-		images []provider.ImagePayload
-	}
-	promptsByProvider := make(map[string]providerPrompt, len(e.Providers))
-	var fallbackPrompt providerPrompt
-	for idx, p := range e.Providers {
-		allowedStages := allowedAgentStagesForProvider(p.ID(), input.ProfilePrompts, input.Candidates, e.ProviderRoles)
-		filteredInsights := filterAgentInsightsByStage(insights, allowedStages)
-		sys, usr, imgs, err := e.PromptBuilder.Build(ctx, input, filteredInsights)
-		if err != nil {
-			return DecisionResult{}, err
-		}
-		entry := providerPrompt{system: sys, user: usr, images: imgs}
-		promptsByProvider[p.ID()] = entry
-		if idx == 0 || fallbackPrompt.user == "" {
-			fallbackPrompt = entry
-		}
-	}
-	if fallbackPrompt.user == "" {
-		sys, usr, imgs, err := e.PromptBuilder.Build(ctx, input, insights)
-		if err != nil {
-			return DecisionResult{}, err
-		}
-		fallbackPrompt = providerPrompt{system: sys, user: usr, images: imgs}
+	promptsByProvider, fallbackPrompt, err := e.prepareProviderPrompts(ctx, input, insights)
+	if err != nil {
+		return DecisionResult{}, err
 	}
 	baseSys := fallbackPrompt.system
 	baseUsr := fallbackPrompt.user
@@ -191,25 +168,7 @@ func (e *DecisionEngine) decideSingle(ctx context.Context, input Context, applyD
 		time.Sleep(5 * time.Second)
 	}
 
-	outs := e.collectModelOutputs(ctx, func(c context.Context, p provider.ModelProvider) ModelOutput {
-		sys, err := resolveSystemPromptForFinalModel(input.ProfilePrompts, input.Candidates, p.ID())
-		if err != nil {
-			return ModelOutput{ProviderID: p.ID(), Err: err}
-		}
-		prompt := fallbackPrompt
-		if entry, ok := promptsByProvider[p.ID()]; ok {
-			if entry.user != "" {
-				prompt.user = entry.user
-			}
-			if len(entry.images) > 0 {
-				prompt.images = entry.images
-			}
-			if entry.system != "" {
-				prompt.system = entry.system
-			}
-		}
-		return e.callProvider(c, p, sys, prompt.user, prompt.images)
-	})
+	outs := e.invokeProvidersWithPrompts(ctx, promptsByProvider, fallbackPrompt, input)
 
 	if len(e.ProviderPreference) > 0 {
 		outs = orderOutputsByPreference(outs, e.ProviderPreference)
@@ -253,6 +212,64 @@ func (e *DecisionEngine) decideSingle(ctx context.Context, input Context, applyD
 	result.TraceID = traceID
 	best.Parsed.TraceID = traceID
 	return result, nil
+}
+
+type providerPrompt struct {
+	system string
+	user   string
+	images []provider.ImagePayload
+}
+
+func (e *DecisionEngine) prepareProviderPrompts(ctx context.Context, input Context, insights []AgentInsight) (map[string]providerPrompt, providerPrompt, error) {
+	promptsByProvider := make(map[string]providerPrompt, len(e.Providers))
+	var fallbackPrompt providerPrompt
+
+	for idx, p := range e.Providers {
+		allowedStages := allowedAgentStagesForProvider(p.ID(), input.ProfilePrompts, input.Candidates, e.ProviderRoles)
+		filteredInsights := filterAgentInsightsByStage(insights, allowedStages)
+		sys, usr, imgs, err := e.PromptBuilder.Build(ctx, input, filteredInsights)
+		if err != nil {
+			return nil, providerPrompt{}, err
+		}
+		entry := providerPrompt{system: sys, user: usr, images: imgs}
+		promptsByProvider[p.ID()] = entry
+		if idx == 0 || fallbackPrompt.user == "" {
+			fallbackPrompt = entry
+		}
+	}
+	if fallbackPrompt.user == "" {
+		sys, usr, imgs, err := e.PromptBuilder.Build(ctx, input, insights)
+		if err != nil {
+			return nil, providerPrompt{}, err
+		}
+		fallbackPrompt = providerPrompt{system: sys, user: usr, images: imgs}
+	}
+	return promptsByProvider, fallbackPrompt, nil
+}
+
+func (e *DecisionEngine) invokeProvidersWithPrompts(ctx context.Context, promptsByProvider map[string]providerPrompt, fallbackPrompt providerPrompt, input Context) []ModelOutput {
+	return e.collectModelOutputs(ctx, func(c context.Context, p provider.ModelProvider) ModelOutput {
+		sys, err := resolveSystemPromptForFinalModel(input.ProfilePrompts, input.Candidates, p.ID())
+		if err != nil {
+			return ModelOutput{ProviderID: p.ID(), Err: err}
+		}
+		merged := mergePrompt(fallbackPrompt, promptsByProvider[p.ID()])
+		return e.callProvider(c, p, sys, merged.user, merged.images)
+	})
+}
+
+func mergePrompt(base, override providerPrompt) providerPrompt {
+	out := base
+	if strings.TrimSpace(override.user) != "" {
+		out.user = override.user
+	}
+	if len(override.images) > 0 {
+		out.images = override.images
+	}
+	if strings.TrimSpace(override.system) != "" {
+		out.system = override.system
+	}
+	return out
 }
 
 func (e *DecisionEngine) logModelTables(outs []ModelOutput) {

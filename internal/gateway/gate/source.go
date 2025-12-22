@@ -225,86 +225,68 @@ func (s *Source) SubscribeTrades(ctx context.Context, symbols []string, opts mar
 }
 
 func (s *Source) runCandleLoop(ctx context.Context, combos []gateSubscription, symbolMap map[string]string, cleanIntervals []string, out chan<- market.CandleEvent, opts market.SubscribeOptions) {
-	delay := time.Second
-	for {
-		if ctx.Err() != nil {
-			return
-		}
-		subCtx, cancel := context.WithCancel(ctx)
-		ws, err := s.newWsService(subCtx)
-		if err != nil {
-			s.recordSubscribeError(err)
-			if opts.OnDisconnect != nil {
-				opts.OnDisconnect(err)
+	s.runWSLoop(ctx, "[gate] candle", opts,
+		func(subCtx context.Context, ws *gatews.WsService) {
+			ws.SetCallBack(gatews.ChannelFutureCandleStick, gatews.NewCallBack(func(msg *gatews.UpdateMsg) {
+				evt, ok := convertCandleUpdate(msg, symbolMap, cleanIntervals)
+				if !ok {
+					return
+				}
+				select {
+				case <-subCtx.Done():
+					return
+				case out <- evt:
+				default:
+					logger.Warnf("[gate] kline channel full, drop %s %s", evt.Symbol, evt.Interval)
+				}
+			}))
+		},
+		func(ws *gatews.WsService) error {
+			var firstErr error
+			for _, combo := range combos {
+				if err := ws.Subscribe(gatews.ChannelFutureCandleStick, []string{combo.interval, combo.contract}); err != nil {
+					if firstErr == nil {
+						firstErr = err
+					}
+					s.recordSubscribeError(err)
+				}
 			}
-			cancel()
-			if !sleepWithContext(ctx, delay) {
-				return
-			}
-			delay = nextDelay(delay)
-			continue
-		}
-
-		ws.SetCallBack(gatews.ChannelFutureCandleStick, gatews.NewCallBack(func(msg *gatews.UpdateMsg) {
-			evt, ok := convertCandleUpdate(msg, symbolMap, cleanIntervals)
-			if !ok {
-				return
-			}
-			select {
-			case <-subCtx.Done():
-				return
-			case out <- evt:
-			default:
-				logger.Warnf("[gate] kline channel full, drop %s %s", evt.Symbol, evt.Interval)
-			}
-		}))
-
-		var firstErr error
-		for _, combo := range combos {
-			if err := ws.Subscribe(gatews.ChannelFutureCandleStick, []string{combo.interval, combo.contract}); err != nil {
-				firstErr = err
-				s.recordSubscribeError(err)
-			}
-		}
-
-		if firstErr != nil {
-			if opts.OnDisconnect != nil {
-				opts.OnDisconnect(firstErr)
-			}
-			cancel()
-			if conn := ws.GetConnection(); conn != nil {
-				_ = conn.Close()
-			}
-			if !sleepWithContext(ctx, delay) {
-				return
-			}
-			delay = nextDelay(delay)
-			continue
-		}
-
-		delay = time.Second
-		if opts.OnConnect != nil {
-			opts.OnConnect()
-		}
-
-		if err := s.monitorGateWS(subCtx, ws, opts); err != nil {
-			s.recordReconnect(err)
-			if opts.OnDisconnect != nil {
-				opts.OnDisconnect(err)
-			}
-		}
-		cancel()
-		if conn := ws.GetConnection(); conn != nil {
-			_ = conn.Close()
-		}
-		if !sleepWithContext(ctx, delay) {
-			return
-		}
-		delay = nextDelay(delay)
-	}
+			return firstErr
+		})
 }
 
 func (s *Source) runTradeLoop(ctx context.Context, contracts []string, symbolMap map[string]string, out chan<- market.TickEvent, opts market.SubscribeOptions) {
+	s.runWSLoop(ctx, "[gate] trade", opts,
+		func(subCtx context.Context, ws *gatews.WsService) {
+			ws.SetCallBack(gatews.ChannelFutureTrade, gatews.NewCallBack(func(msg *gatews.UpdateMsg) {
+				evt, ok := convertTradeUpdate(msg, symbolMap)
+				if !ok {
+					return
+				}
+				select {
+				case <-subCtx.Done():
+					return
+				case out <- evt:
+				default:
+					logger.Warnf("[gate] trade channel full, drop %s", evt.Symbol)
+				}
+			}))
+		},
+		func(ws *gatews.WsService) error {
+			var firstErr error
+			for _, contract := range contracts {
+				if err := ws.Subscribe(gatews.ChannelFutureTrade, []string{contract}); err != nil {
+					if firstErr == nil {
+						firstErr = err
+					}
+					s.recordSubscribeError(err)
+				}
+			}
+			return firstErr
+		})
+}
+
+func (s *Source) runWSLoop(ctx context.Context, label string, opts market.SubscribeOptions, register func(context.Context, *gatews.WsService), subscribe func(*gatews.WsService) error) {
 	delay := time.Second
 	for {
 		if ctx.Err() != nil {
@@ -325,28 +307,8 @@ func (s *Source) runTradeLoop(ctx context.Context, contracts []string, symbolMap
 			continue
 		}
 
-		ws.SetCallBack(gatews.ChannelFutureTrade, gatews.NewCallBack(func(msg *gatews.UpdateMsg) {
-			evt, ok := convertTradeUpdate(msg, symbolMap)
-			if !ok {
-				return
-			}
-			select {
-			case <-subCtx.Done():
-				return
-			case out <- evt:
-			default:
-				logger.Warnf("[gate] trade channel full, drop %s", evt.Symbol)
-			}
-		}))
-
-		var firstErr error
-		for _, contract := range contracts {
-			if err := ws.Subscribe(gatews.ChannelFutureTrade, []string{contract}); err != nil {
-				firstErr = err
-				s.recordSubscribeError(err)
-			}
-		}
-
+		register(subCtx, ws)
+		firstErr := subscribe(ws)
 		if firstErr != nil {
 			if opts.OnDisconnect != nil {
 				opts.OnDisconnect(firstErr)

@@ -70,7 +70,7 @@ func (b *DefaultPromptBuilder) buildUserSummary(ctx context.Context, input Conte
 
 	sections := render.Sections{
 		Header:            b.renderHeader(input),
-		Account:           b.renderAccountOverview(input.Account, input.Market),
+		Account:           b.renderAccountOverview(input.Account, augmentMarketData(input.Market, input.Analysis)),
 		Previous:          b.renderPreviousReasoning(input.PreviousReasoning),
 		PreviousProviders: b.renderPreviousProviderOutputs(input.PreviousProviderOutputs),
 		Derivatives:       "", // provider 阶段无需在主 prompt 展示衍生品数据

@@ -261,17 +261,9 @@ func finalizeClosure(out *exchange.APIPosition, closeAtMillis int64, currentPric
 }
 
 func syncOpenOrderPnL(out *exchange.APIPosition, rec database.LiveOrderRecord, baseStake float64) {
-	realizedUSD := valOrZero(rec.RealizedPnLUSD)
-	realizedRatio := valOrZero(rec.RealizedPnLRatio)
-	totalUSD := valOrZero(rec.PnLUSD)
-	totalRatio := valOrZero(rec.PnLRatio)
+	realizedUSD, realizedRatio := resolveRealizedPnL(rec, out, baseStake)
+	totalUSD, totalRatio := resolveTotalPnL(rec, out, baseStake, realizedUSD, realizedRatio)
 
-	if realizedUSD == 0 && totalUSD != 0 && out.UnrealizedPnLUSD != 0 {
-		realizedUSD = totalUSD - out.UnrealizedPnLUSD
-	}
-	if realizedRatio == 0 && baseStake > 0 && realizedUSD != 0 {
-		realizedRatio = realizedUSD / baseStake
-	}
 	if out.RealizedPnLUSD == 0 && realizedUSD != 0 {
 		out.RealizedPnLUSD = realizedUSD
 	}
@@ -279,19 +271,42 @@ func syncOpenOrderPnL(out *exchange.APIPosition, rec database.LiveOrderRecord, b
 		out.RealizedPnLRatio = realizedRatio
 	}
 
-	if totalUSD == 0 && (realizedUSD != 0 || out.UnrealizedPnLUSD != 0) {
-		totalUSD = realizedUSD + out.UnrealizedPnLUSD
-	}
-	if totalRatio == 0 && baseStake > 0 && totalUSD != 0 {
-		totalRatio = totalUSD / baseStake
-	} else if totalRatio == 0 {
-		totalRatio = out.UnrealizedPnLRatio + realizedRatio
-	}
-
 	out.PnLUSD = totalUSD
 	if totalRatio != 0 {
 		out.PnLRatio = totalRatio
 	}
+}
+
+func resolveRealizedPnL(rec database.LiveOrderRecord, out *exchange.APIPosition, baseStake float64) (float64, float64) {
+	realizedUSD := valOrZero(rec.RealizedPnLUSD)
+	realizedRatio := valOrZero(rec.RealizedPnLRatio)
+	totalUSD := valOrZero(rec.PnLUSD)
+
+	if realizedUSD == 0 && totalUSD != 0 && out.UnrealizedPnLUSD != 0 {
+		realizedUSD = totalUSD - out.UnrealizedPnLUSD
+	}
+	if realizedRatio == 0 && baseStake > 0 && realizedUSD != 0 {
+		realizedRatio = realizedUSD / baseStake
+	}
+	return realizedUSD, realizedRatio
+}
+
+func resolveTotalPnL(rec database.LiveOrderRecord, out *exchange.APIPosition, baseStake, realizedUSD, realizedRatio float64) (float64, float64) {
+	totalUSD := valOrZero(rec.PnLUSD)
+	totalRatio := valOrZero(rec.PnLRatio)
+
+	if totalUSD == 0 && (realizedUSD != 0 || out.UnrealizedPnLUSD != 0) {
+		totalUSD = realizedUSD + out.UnrealizedPnLUSD
+	}
+	if totalRatio == 0 {
+		switch {
+		case baseStake > 0 && totalUSD != 0:
+			totalRatio = totalUSD / baseStake
+		default:
+			totalRatio = out.UnrealizedPnLRatio + realizedRatio
+		}
+	}
+	return totalUSD, totalRatio
 }
 
 func liveOrderToAPIPosition(rec database.LiveOrderRecord, nowMillis int64) exchange.APIPosition {

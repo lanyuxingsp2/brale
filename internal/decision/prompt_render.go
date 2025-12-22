@@ -196,13 +196,7 @@ func (b *DefaultPromptBuilder) renderFearGreedSection(acc *derivativesAccumulato
 }
 
 func (b *DefaultPromptBuilder) renderMetricsSection(acc *derivativesAccumulator, sym string, dir ProfileDirective, metricsData market.DerivativesData, metricsOK bool) {
-	if (dir.IncludeOI || dir.IncludeFunding) && (!metricsOK || metricsData.Error != "") {
-		errMsg := metricsData.Error
-		if errMsg == "" {
-			errMsg = "无数据"
-		}
-		fmt.Fprintf(acc.sb, "  - 衍生品数据获取失败 (%s)\n", errMsg)
-		acc.updateLatest(metricsData.LastUpdate)
+	if stop := b.renderMetricsError(acc, dir, metricsData, metricsOK); stop {
 		return
 	}
 	if b.Metrics == nil || (!dir.IncludeOI && !dir.IncludeFunding) {
@@ -213,42 +207,10 @@ func (b *DefaultPromptBuilder) renderMetricsSection(acc *derivativesAccumulator,
 	fp.WriteString("sym=")
 	fp.WriteString(sym)
 	if dir.IncludeOI {
-		fmt.Fprintf(acc.sb, "  - OI.now: %.2f\n", metricsData.OI)
-		fp.WriteString("|oi=")
-		fp.WriteString(formatutil.Float(metricsData.OI, 4))
-		for _, tf := range b.Metrics.GetTargetTimeframes() {
-			if oldOI, ok := metricsData.OIHistory[tf]; ok && oldOI > 0 {
-				changePct := (metricsData.OI - oldOI) / oldOI * 100
-				fmt.Fprintf(acc.sb, "    - OI.%s: %.2f (%.2f%%)\n", tf, oldOI, changePct)
-				fp.WriteString("|oi_")
-				fp.WriteString(tf)
-				fp.WriteString("=")
-				fp.WriteString(formatutil.Float(oldOI, 4))
-				if changePct >= 5 {
-					acc.leverageCrowded = true
-				}
-			} else {
-				fmt.Fprintf(acc.sb, "    - OI.%s: 无数据\n", tf)
-				fp.WriteString("|oi_")
-				fp.WriteString(tf)
-				fp.WriteString("=0")
-			}
-		}
-		if !metricsData.LastUpdate.IsZero() {
-			acc.addAge("oi", metricsData.LastUpdate)
-		}
+		b.renderOI(acc, &fp, metricsData)
 	}
 	if dir.IncludeFunding {
-		fmt.Fprintf(acc.sb, "  - funding.rate: %.4f%%\n", metricsData.FundingRate*100)
-		fp.WriteString("|fund=")
-		fp.WriteString(formatutil.Float(metricsData.FundingRate, 8))
-		if math.Abs(metricsData.FundingRate) >= 0.0001 {
-			acc.fundingStressed = true
-			acc.leverageCrowded = true
-		}
-		if !metricsData.LastUpdate.IsZero() {
-			acc.addAge("funding", metricsData.LastUpdate)
-		}
+		b.renderFunding(acc, &fp, metricsData)
 	}
 	acc.updateLatest(metricsData.LastUpdate)
 	if fp.Len() > 0 {
@@ -311,6 +273,62 @@ func (b *DefaultPromptBuilder) renderIntervalDerivatives(acc *derivativesAccumul
 	}
 	if hasData {
 		acc.addFingerprint(fp.String())
+	}
+}
+
+func (b *DefaultPromptBuilder) renderMetricsError(acc *derivativesAccumulator, dir ProfileDirective, metricsData market.DerivativesData, metricsOK bool) bool {
+	if !(dir.IncludeOI || dir.IncludeFunding) {
+		return true
+	}
+	if metricsOK && metricsData.Error == "" {
+		return false
+	}
+	errMsg := metricsData.Error
+	if errMsg == "" {
+		errMsg = "无数据"
+	}
+	fmt.Fprintf(acc.sb, "  - 衍生品数据获取失败 (%s)\n", errMsg)
+	acc.updateLatest(metricsData.LastUpdate)
+	return true
+}
+
+func (b *DefaultPromptBuilder) renderOI(acc *derivativesAccumulator, fp *strings.Builder, metricsData market.DerivativesData) {
+	fmt.Fprintf(acc.sb, "  - OI.now: %.2f\n", metricsData.OI)
+	fp.WriteString("|oi=")
+	fp.WriteString(formatutil.Float(metricsData.OI, 4))
+	for _, tf := range b.Metrics.GetTargetTimeframes() {
+		if oldOI, ok := metricsData.OIHistory[tf]; ok && oldOI > 0 {
+			changePct := (metricsData.OI - oldOI) / oldOI * 100
+			fmt.Fprintf(acc.sb, "    - OI.%s: %.2f (%.2f%%)\n", tf, oldOI, changePct)
+			fp.WriteString("|oi_")
+			fp.WriteString(tf)
+			fp.WriteString("=")
+			fp.WriteString(formatutil.Float(oldOI, 4))
+			if changePct >= 5 {
+				acc.leverageCrowded = true
+			}
+		} else {
+			fmt.Fprintf(acc.sb, "    - OI.%s: 无数据\n", tf)
+			fp.WriteString("|oi_")
+			fp.WriteString(tf)
+			fp.WriteString("=0")
+		}
+	}
+	if !metricsData.LastUpdate.IsZero() {
+		acc.addAge("oi", metricsData.LastUpdate)
+	}
+}
+
+func (b *DefaultPromptBuilder) renderFunding(acc *derivativesAccumulator, fp *strings.Builder, metricsData market.DerivativesData) {
+	fmt.Fprintf(acc.sb, "  - funding.rate: %.4f%%\n", metricsData.FundingRate*100)
+	fp.WriteString("|fund=")
+	fp.WriteString(formatutil.Float(metricsData.FundingRate, 8))
+	if math.Abs(metricsData.FundingRate) >= 0.0001 {
+		acc.fundingStressed = true
+		acc.leverageCrowded = true
+	}
+	if !metricsData.LastUpdate.IsZero() {
+		acc.addAge("funding", metricsData.LastUpdate)
 	}
 }
 

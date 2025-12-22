@@ -63,17 +63,8 @@ func (a *AIConfig) validate() error {
 	}
 	if a.MultiAgent.Enabled {
 		ma := a.MultiAgent
-		if strings.TrimSpace(ma.IndicatorTemplate) == "" {
-			return fmt.Errorf("ai.multi_agent.indicator_template cannot be empty")
-		}
-		if strings.TrimSpace(ma.PatternTemplate) == "" {
-			return fmt.Errorf("ai.multi_agent.pattern_template cannot be empty")
-		}
-		if strings.TrimSpace(ma.TrendTemplate) == "" {
-			return fmt.Errorf("ai.multi_agent.trend_template cannot be empty")
-		}
-		if strings.TrimSpace(ma.MechanicsTemplate) == "" {
-			return fmt.Errorf("ai.multi_agent.mechanics_template cannot be empty")
+		if err := validateMultiAgentTemplates(ma); err != nil {
+			return err
 		}
 		if ma.MaxBlocks < 0 {
 			return fmt.Errorf("ai.multi_agent.max_blocks must be >= 0")
@@ -116,6 +107,22 @@ func (a *AIConfig) validatePersonas(modelSet map[string]struct{}) error {
 			}
 			stageOwners[stage] = modelID
 		}
+	}
+	return nil
+}
+
+func validateMultiAgentTemplates(ma MultiAgentConfig) error {
+	if strings.TrimSpace(ma.IndicatorTemplate) == "" {
+		return fmt.Errorf("ai.multi_agent.indicator_template cannot be empty")
+	}
+	if strings.TrimSpace(ma.PatternTemplate) == "" {
+		return fmt.Errorf("ai.multi_agent.pattern_template cannot be empty")
+	}
+	if strings.TrimSpace(ma.TrendTemplate) == "" {
+		return fmt.Errorf("ai.multi_agent.trend_template cannot be empty")
+	}
+	if strings.TrimSpace(ma.MechanicsTemplate) == "" {
+		return fmt.Errorf("ai.multi_agent.mechanics_template cannot be empty")
 	}
 	return nil
 }
